@@ -1,0 +1,110 @@
+Folder PATH listing for volume New Volume
+Volume serial number is 000000CF DCBA:AAAF
+D:.
+¦   reset_db.py
+¦   scratch_list_calls.py
+¦   scratch_query.py
+¦   structure.txt
+¦   __init__.py
+¦   
++---app
+¦   ¦   main.py
+¦   ¦   __init__.py
+¦   ¦   
+¦   +---api
+¦   ¦   ¦   deps.py
+¦   ¦   ¦   __init__.py
+¦   ¦   ¦   
+¦   ¦   +---v1
+¦   ¦   ¦   ¦   __init__.py
+¦   ¦   ¦   ¦   
+¦   ¦   ¦   +---endpoints
+¦   ¦   ¦   ¦   ¦   agents.py
+¦   ¦   ¦   ¦   ¦   auth.py
+¦   ¦   ¦   ¦   ¦   calls.py
+¦   ¦   ¦   ¦   ¦   dashboard.py
+¦   ¦   ¦   ¦   ¦   integrations.py
+¦   ¦   ¦   ¦   ¦   keys.py
+¦   ¦   ¦   ¦   ¦   knowledge.py
+¦   ¦   ¦   ¦   ¦   numbers.py
+¦   ¦   ¦   ¦   ¦   providers.py
+¦   ¦   ¦   ¦   ¦   sessions.py
+¦   ¦   ¦   ¦   ¦   settings.py
+¦   ¦   ¦   ¦   ¦   telephony.py
+¦   ¦   ¦   ¦   ¦   tools.py
+¦   ¦   ¦   ¦   ¦   twilio.py
+¦   ¦   ¦   ¦   ¦   
+¦   ¦   ¦   ¦   +---__pycache__
+¦   ¦   ¦   ¦           agents.cpython-312.pyc
+¦   ¦   ¦   ¦           auth.cpython-312.pyc
+¦   ¦   ¦   ¦           calls.cpython-312.pyc
+¦   ¦   ¦   ¦           dashboard.cpython-312.pyc
+¦   ¦   ¦   ¦           integrations.cpython-312.pyc
+¦   ¦   ¦   ¦           keys.cpython-312.pyc
+¦   ¦   ¦   ¦           knowledge.cpython-312.pyc
+¦   ¦   ¦   ¦           numbers.cpython-312.pyc
+¦   ¦   ¦   ¦           providers.cpython-312.pyc
+¦   ¦   ¦   ¦           sessions.cpython-312.pyc
+¦   ¦   ¦   ¦           settings.cpython-312.pyc
+¦   ¦   ¦   ¦           telephony.cpython-312.pyc
+¦   ¦   ¦   ¦           tools.cpython-312.pyc
+¦   ¦   ¦   ¦           twilio.cpython-312.pyc
+¦   ¦   ¦   ¦           
+¦   ¦   ¦   +---__pycache__
+¦   ¦   ¦           __init__.cpython-312.pyc
+¦   ¦   ¦           
+¦   ¦   +---__pycache__
+¦   ¦           deps.cpython-312.pyc
+¦   ¦           __init__.cpython-312.pyc
+¦   ¦           
+¦   +---core
+¦   ¦   ¦   config.py
+¦   ¦   ¦   security.py
+¦   ¦   ¦   
+¦   ¦   +---integrations
+¦   ¦   ¦       google_utils.py
+¦   ¦   ¦       
+¦   ¦   +---__pycache__
+¦   ¦           config.cpython-312.pyc
+¦   ¦           security.cpython-312.pyc
+¦   ¦           
+¦   +---db
+¦   ¦   ¦   session.py
+¦   ¦   ¦   
+¦   ¦   +---__pycache__
+¦   ¦           session.cpython-312.pyc
+¦   ¦           
+¦   +---models
+¦   ¦   ¦   agent.py
+¦   ¦   ¦   orm.py
+¦   ¦   ¦   
+¦   ¦   +---__pycache__
+¦   ¦           agent.cpython-312.pyc
+¦   ¦           orm.cpython-312.pyc
+¦   ¦           
+¦   +---services
+¦   ¦   ¦   billing_service.py
+¦   ¦   ¦   livekit_service.py
+¦   ¦   ¦   phone_numbers_service.py
+¦   ¦   ¦   rag.py
+¦   ¦   ¦   sip_service.py
+¦   ¦   ¦   sip_trunk_service.py
+¦   ¦   ¦   
+¦   ¦   +---__pycache__
+¦   ¦           livekit_service.cpython-312.pyc
+¦   ¦           phone_numbers_service.cpython-312.pyc
+¦   ¦           rag.cpython-312.pyc
+¦   ¦           sip_trunk_service.cpython-312.pyc
+¦   ¦           
+¦   +---__pycache__
+¦           main.cpython-312.pyc
+¦           __init__.cpython-312.pyc
+¦           
++---scripts
+¦       check_users.py
+¦       create_initial_user.py
+¦       reinit_db.py
+¦       
++---__pycache__
+        __init__.cpython-312.pyc
+        

@@ -1,0 +1,91 @@
+================================================================================
+HMS VOICE FORGE PLATFORM — DATE AND TIME HANDLING LOGIC & IMPLEMENTATION
+================================================================================
+Date: June 9, 2026
+Workspace: c:\Users\mas90\Desktop\hidden-minds\ai-voice-agent\my-agent
+================================================================================
+
+This document details the complete design, architecture, and code-level logic
+for handling date, time, and timezone information across the HMS Voice Forge
+platform (Backend FastAPI / Frontend React).
+
+--------------------------------------------------------------------------------
+1. BACKEND DATETIME ARCHITECTURE (FASTAPI & SQLALCHEMY)
+--------------------------------------------------------------------------------
+
+To prevent timezone inconsistencies, data drift, and regional formatting issues,
+the backend architecture enforces standard UTC (Coordinated Universal Time)
+for all storage, calculation, and API communication.
+
+A. DATABASE MODELS (backend/app/models/orm.py)
+   All timestamps are declared using SQLAlchemy's `DateTime` type and default to
+   universal UTC:
+   - `created_at`: `Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)`
+   - `updated_at`: Defaults to `datetime.utcnow` and auto-updates on mutation:
+     `default=datetime.utcnow, onupdate=datetime.utcnow`
+   - `expires_at`: A nullable DateTime field used for temporary tokens or OAuth credentials.
+   - `started_at` / `ended_at` (Call Session logs): Represent session intervals, defaulted
+     to `datetime.utcnow()` when a call starts and updated to `datetime.utcnow()`
+     when it terminates.
+   - `timestamp` (Message & Status logs): Tracks message logs sequentially.
+
+B. SECURITY & JWT (backend/app/core/security.py)
+   JWT tokens encode their expiration time (`exp`) in UTC using the offset-aware
+   `timezone.utc` object:
+   - Logic: `expire = datetime.now(timezone.utc) + expires_delta`
+
+C. INTEGRATIONS & ACCESS TOKEN EXPIRY (backend/app/core/integrations/google_utils.py)
+   OAuth flow token refresh logic calculates expires thresholds in UTC:
+   - Check: `is_expired = datetime.utcnow() + timedelta(minutes=5) >= integration.expires_at`
+   - Update: `integration.expires_at = datetime.utcnow() + timedelta(seconds=expires_in)`
+
+D. ANALYTICS & RANGE QUERY CUTOFFS (backend/app/api/v1/endpoints/dashboard.py)
+   - Range filtering uses timedelta subtraction from current UTC time:
+     `cutoff = datetime.utcnow() - timedelta(days=days)`
+   - Daily chart intervals align to daily bounds (midnight UTC) to normalize counts:
+     `day_start = (datetime.utcnow() - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)`
+
+--------------------------------------------------------------------------------
+2. FRONTEND DATETIME ARCHITECTURE (REACT & TYPESCRIPT)
+--------------------------------------------------------------------------------
+
+The frontend parses raw ISO 8601 string representations (which are returned in UTC
+from the backend API) and renders them in the browser's local timezone.
+
+A. PARSING AND DISPLAY IN LOGS & PANELS
+   For call logs, conversational histories, and active dialer panels:
+   - Code: `call.started_at ? new Date(call.started_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '—'`
+   - Logic: `new Date()` automatically parses the UTC ISO string (e.g. "2026-06-09T08:50:36.123Z")
+     and converts it to the user's localized time.
+
+B. PROFILE PAGE FORMATTING (frontend/src/pages/ProfilePage.tsx)
+   User sign-up dates are displayed as readable strings (e.g. "June 9, 2026"):
+   - Code: `new Date(dateString).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })`
+
+C. GRAPHICAL METRICS & CHARTS (frontend/src/pages/AnalyticsPage.tsx)
+   X-Axis labels in charts use shortened day/month localized values:
+   - Code: `new Date(day.date).toLocaleDateString([], { month: 'short', day: 'numeric' })`
+
+D. USER TIMEZONE PREFERENCE SETTING (frontend/src/pages/SettingsPage.tsx)
+   Users can choose their timezone configuration (stored as preference `general.timezone`
+   in settings such as `UTC`, `Asia/Kolkata`, `America/New_York` etc.). This enables the
+   frontend to pass the preferred timezone header or context where reporting or raw export
+   formatting requires server-side timezone adjustment.
+
+================================================================================
+SUMMARY
+================================================================================
+1. Backend Stores: Always UTC (`datetime.utcnow()`).
+2. API Transfers: ISO 8601 strings.
+3. Frontend Displays: Localized dynamically using browser localization APIs
+   (`toLocaleString` / `toLocaleDateString`).
+================================================================================
+3. RECENT ACTIVITY & REFACTORING LOG (CONTEXT PERSISTENCE)
+================================================================================
+- Date: June 9, 2026
+- Task: Gradient Removal & Simplification
+- Action: Removed all floating background orbs and layout-level animated gradients.
+  Simplified page headers and main active action buttons to use solid, clean
+  primary background colors (`var(--primary)`), aligning with simple & concise design principles.
+================================================================================
+

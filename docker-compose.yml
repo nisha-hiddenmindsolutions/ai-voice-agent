@@ -1,0 +1,170 @@
+# ==============================================================================
+# docker-compose.yml — Production orchestration for Voice AI SaaS
+#
+# Services:
+#   nginx    — reverse proxy, SSL, rate limiting (port 80/443)
+#   app      — FastAPI + React frontend (internal port 8000)
+#   postgres — Primary database (internal port 5432)
+#
+# External services (env vars only, no containers needed):
+#   LiveKit Cloud, Qdrant Cloud, Gemini API, Google OAuth
+#
+# Usage:
+#   docker compose --env-file .env.production up -d --build
+# ==============================================================================
+
+services:
+
+  # ── nginx: Reverse Proxy ────────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: voice_ai_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro              # Mount your SSL certs here
+      - certbot_webroot:/var/www/certbot:ro         # For Let's Encrypt renewal
+      - nginx_logs:/var/log/nginx
+    environment:
+      - DOMAIN=${DOMAIN}
+    # Substitute ${DOMAIN} in nginx.conf at startup
+    command:
+      - /bin/sh
+      - -c
+      - |
+        envsubst '$$DOMAIN' < /etc/nginx/nginx.conf > /tmp/nginx.conf && nginx -c /tmp/nginx.conf -g 'daemon off;'
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - frontend_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ── app: FastAPI + React ────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    container_name: voice_ai_app
+    restart: unless-stopped
+    # expose:
+    #   - "8000"   # Internal only — nginx proxies to this
+    ports:
+      - "8000:8000"  # Optional: expose for local testing (not recommended in prod)
+    env_file:
+      - .env
+    environment:
+      # Override DB host to use the compose service name
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    volumes:
+      - app_data:/app/data     # Persistent data directory
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - frontend_net
+      - backend_net
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "10"
+    # Resource limits (tune based on your server)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+
+  # ── postgres: Primary Database ──────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: voice_ai_postgres
+    restart: unless-stopped
+    # expose:
+    #   - "5432"   # Internal only — never expose DB to the internet
+    ports:
+      - "5432:5432"  # Optional: expose for local testing (not recommended in prod)
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       ${POSTGRES_DB}
+      PGDATA:            /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro  # Optional: run on first init
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    networks:
+      - backend_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # Postgres performance tuning (adjust for your RAM)
+    command: >
+      postgres
+        -c max_connections=100
+        -c shared_buffers=256MB
+        -c effective_cache_size=768MB
+        -c maintenance_work_mem=64MB
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers=16MB
+        -c default_statistics_target=100
+        -c random_page_cost=1.1
+        -c effective_io_concurrency=200
+        -c work_mem=4MB
+        -c min_wal_size=1GB
+        -c max_wal_size=4GB
+        -c log_min_duration_statement=500
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+        reservations:
+          memory: 256M
+
+# ── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  frontend_net:
+    # nginx ↔ app
+    driver: bridge
+  backend_net:
+    # app ↔ postgres (isolated — nginx cannot reach postgres directly)
+    driver: bridge
+    internal: true
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+  app_data:
+    driver: local
+  nginx_logs:
+    driver: local
+  certbot_webroot:
+    driver: local

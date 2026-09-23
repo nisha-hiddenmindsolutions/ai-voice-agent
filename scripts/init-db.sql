@@ -1,0 +1,1 @@
+-- Optional first-run init SQL (intentionally empty; schema is managed by SQLAlchemy migrations at app startup)

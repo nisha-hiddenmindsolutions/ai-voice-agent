@@ -9,6 +9,8 @@ from sqlalchemy import text
 # Create Async Engine
 # Note: For SQLite for local testing, use sqlite+aiosqlite
 db_url = settings.DATABASE_URL.strip('"').strip("'")
+if db_url.startswith("postgresql://") and not db_url.startswith("postgresql+asyncpg://"):
+    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 engine = create_async_engine(db_url, echo=True)
 
 # Create Session Factory

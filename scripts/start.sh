@@ -36,10 +36,10 @@ print('✅ [DB] Schema ready')
 "
 
 # ── 3. Start uvicorn ──────────────────────────────────────────────────────────
-echo "🌐 [START] Starting uvicorn on 0.0.0.0:8000..."
+echo "🌐 [START] Starting uvicorn on 0.0.0.0:${PORT:-8000}..."
 exec /app/.venv/bin/uvicorn backend.app.main:app \
     --host 0.0.0.0 \
-    --port 8000 \
+    --port "${PORT:-8000}" \
     --workers 1 \
     --loop uvloop \
     --http httptools \

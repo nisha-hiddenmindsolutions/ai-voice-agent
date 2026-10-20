@@ -32,16 +32,30 @@ class Settings(BaseSettings):
     ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "") # Fernet (Base64)
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7 # 1 week
     
+    # Dynamic Domain Discovery (Local, Railway, or custom cloud)
+    _railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    _custom_backend = os.getenv("BACKEND_URL") or os.getenv("BACKEND_BASE_URL")
+
+    if _custom_backend:
+        _default_base = _custom_backend.rstrip("/")
+    elif _railway_domain:
+        _default_base = f"https://{_railway_domain}".rstrip("/")
+    else:
+        _default_base = "http://localhost:8000"
+
+    _default_frontend = _default_base if (_railway_domain or _custom_backend) else "http://localhost:5173"
+    _default_google_redirect = f"{_default_base}/api/v1/integrations/google/callback"
+
+    # Backend base URL
+    BACKEND_BASE_URL: str = os.getenv("BACKEND_BASE_URL", _default_base)
+
+    # Frontend URL (used for OAuth redirects)
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", _default_frontend)
+
     # Google OAuth
     GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
     GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
-    GOOGLE_OAUTH_REDIRECT_URI: str = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:8000/api/v1/integrations/google/callback")
-
-    # Backend base URL
-    BACKEND_BASE_URL: str = os.getenv("BACKEND_BASE_URL", "http://localhost:8000")
-
-    # Frontend URL (used for OAuth redirects)
-    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    GOOGLE_OAUTH_REDIRECT_URI: str = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", _default_google_redirect)
 
     class Config:
         case_sensitive = True

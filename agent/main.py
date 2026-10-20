@@ -64,7 +64,8 @@ logger.setLevel(_LOG_LEVEL)
 
 # API endpoint for transcript logging
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
-INTERNAL_BACKEND_URL = os.getenv("INTERNAL_BACKEND_URL", "http://localhost:8000")
+_internal_port = os.getenv("PORT", "8000")
+INTERNAL_BACKEND_URL = os.getenv("INTERNAL_BACKEND_URL", f"http://127.0.0.1:{_internal_port}")
 
 async def log_transcript(session_id: str, role: str, content: str):
     """Sends transcript to the backend API."""

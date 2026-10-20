@@ -87,7 +87,7 @@ def build_tools(config: Dict[str, Any]) -> List[llm.FunctionTool]:
         try:
             rag_tool = build_rag_tool(
                 agent_id=agent_id,
-                backend_url=os.getenv("INTERNAL_BACKEND_URL", "http://localhost:8000"),
+                backend_url=os.getenv("INTERNAL_BACKEND_URL", f"http://127.0.0.1:{os.getenv('PORT', '8000')}"),
             )
             agent_tools.append(rag_tool)
             logger.info(f"[Tools] registered rag_system tool for agent_id={agent_id}")

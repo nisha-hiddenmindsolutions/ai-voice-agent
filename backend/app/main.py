@@ -105,10 +105,15 @@ _ALLOWED_ORIGINS = [
     ).split(",")
     if o.strip()
 ]
+if settings.BACKEND_BASE_URL and settings.BACKEND_BASE_URL not in _ALLOWED_ORIGINS:
+    _ALLOWED_ORIGINS.append(settings.BACKEND_BASE_URL)
+if settings.FRONTEND_URL and settings.FRONTEND_URL not in _ALLOWED_ORIGINS:
+    _ALLOWED_ORIGINS.append(settings.FRONTEND_URL)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origin_regex=r"https://.*(\.vercel\.app|\.up\.railway\.app|\.railway\.app)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

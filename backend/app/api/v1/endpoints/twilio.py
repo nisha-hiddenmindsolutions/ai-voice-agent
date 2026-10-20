@@ -309,7 +309,8 @@ async def _trigger_twilio_outbound_internal(
     await db.refresh(db_call)
 
     # ── 5. Call Twilio REST API ───────────────────────────────────────────────
-    base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+    from app.core.config import settings
+    base_url = os.getenv("BACKEND_URL", settings.BACKEND_BASE_URL)
     # URL-encode agent_id and room_name to be safe, use & (not &amp;) in the
     # actual URL — &amp; is only for embedding URLs inside XML attributes.
     flow_url = (

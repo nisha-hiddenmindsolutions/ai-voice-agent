@@ -463,6 +463,7 @@ async def _extract_spoken_email(text: str) -> Optional[str]:
     if not any(ind in lower for ind in email_indicators):
         return None
 
+    try:
         groq_key = os.getenv("GROQ_API_KEY", "")
         openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
         if groq_key:
@@ -481,6 +482,20 @@ async def _extract_spoken_email(text: str) -> Optional[str]:
             }
         else:
             return None
+
+        prompt = (
+            "You are an expert at extracting email addresses from spoken phone call speech-to-text transcripts.\n"
+            "Speech-to-text often transcribes email addresses with phonetics or errors:\n"
+            "- 'at', 'added', 'at the', 'at the rate', 'a' instead of '@'\n"
+            "- 'dot', 'period', 'point' instead of '.'\n"
+            "- spaces between letters or words: 'N. I s h a' -> 'nisha', 'hidden mind solutions' -> 'hiddenmindsolutions'\n"
+            "- numbers: '08', '0 8', 'zero eight'\n"
+            "- common domains: 'gmail.com', 'yahoo.com', 'outlook.com', etc.\n\n"
+            f"Transcript: \"\"\"{text}\"\"\"\n\n"
+            "Extract the single intended email address mentioned by the caller. "
+            "Return ONLY the valid email address in lowercase, or NONE if no email address was mentioned. "
+            "Do not include quotes, markdown, or any other words."
+        )
 
         client = _get_groq_client()
         resp = await client.post(

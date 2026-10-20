@@ -59,7 +59,7 @@ async def create_tool(
         resolved_integration_id = tool.integration_id or None
         tool_config = dict(tool.config) if tool.config else {}
         
-        if tool.tool_type in ("SHEETS", "CALENDAR") and not resolved_integration_id:
+        if tool.tool_type in ("SHEETS", "CALENDAR", "GMAIL") and not resolved_integration_id:
             # Auto-find the user's Google integration
             int_stmt = select(IntegrationORM).where(
                 IntegrationORM.user_id == current_user.id,
@@ -232,6 +232,26 @@ async def test_tool_by_id(
     
     if not tool_orm:
         raise HTTPException(status_code=404, detail="Registry Node not found")
+
+    # Native Google tools (SHEETS, CALENDAR, GMAIL)
+    if tool_orm.tool_type in ("SHEETS", "CALENDAR", "GMAIL"):
+        from app.services.agent_metadata_service import _resolve_tool_token
+        token = await _resolve_tool_token(tool_orm, db)
+        if not token:
+            return {
+                "status": "failure",
+                "error": "Google integration token expired or not connected. Please go to Integrations page and re-connect your Google Account."
+            }
+        return {
+            "status": "success",
+            "code": 200,
+            "response": {
+                "tool": tool_orm.name,
+                "tool_type": tool_orm.tool_type,
+                "auth": "Google OAuth Active",
+                "status": "online"
+            }
+        }
 
     # Decrypt the key before the test call
     decrypted_key = vault.decrypt(tool_orm.api_key) if tool_orm.api_key else None

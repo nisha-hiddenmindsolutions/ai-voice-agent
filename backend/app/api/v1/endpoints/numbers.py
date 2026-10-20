@@ -38,15 +38,39 @@ async def add_number(
     current_user: UserORM = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    clean_num = number.number.strip()
+    # Normalize double prefix if passed like +91+1...
+    if "+1+" in clean_num or "+91+" in clean_num:
+        clean_num = "+" + "".join(c for c in clean_num if c.isdigit())
+        
+    stmt = select(PhoneNumberORM).where(PhoneNumberORM.number == clean_num)
+    res = await db.execute(stmt)
+    existing = res.scalar_one_or_none()
+    
+    if existing:
+        existing.provider = number.provider
+        if number.agent_id:
+            existing.agent_id = number.agent_id
+        if number.sip_trunk_id:
+            existing.sip_trunk_id = number.sip_trunk_id
+        await db.commit()
+        await db.refresh(existing)
+        return existing
+
     try:
+        data = number.model_dump()
+        data["number"] = clean_num
         db_number = PhoneNumberORM(
-            **number.model_dump(),
+            **data,
             user_id=current_user.id
         )
         db.add(db_number)
         await db.commit()
         await db.refresh(db_number)
         return db_number
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=f"Phone number '{clean_num}' is already imported.")
     except Exception as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=str(e))

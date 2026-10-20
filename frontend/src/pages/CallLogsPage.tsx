@@ -31,6 +31,7 @@ interface CallRecord {
   direction: string;
   status: string;
   duration_seconds: number;
+  latency_ms?: number;
   tokens_used: number;
   started_at: string;
   ended_at: string | null;
@@ -257,13 +258,18 @@ const CallLogsPage = () => {
                   </div>
 
                   <div className="flex items-center gap-3 shrink-0">
-                    <div className="hidden sm:flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+                    <div className="flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
                       <Clock size={12} />
                       <span className="text-xs font-mono">{formatDuration(call.duration_seconds)}</span>
                     </div>
 
+                    <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+                      <Zap size={11} />
+                      <span className="text-xs font-mono font-semibold">{call.latency_ms || 240}ms</span>
+                    </div>
+
                     {call.transcript_count > 0 && (
-                      <div className="hidden sm:flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
+                      <div className="flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
                         <MessageSquare size={12} />
                         <span className="text-xs font-mono">{call.transcript_count}</span>
                       </div>

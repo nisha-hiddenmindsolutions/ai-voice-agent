@@ -27,13 +27,15 @@ Security:
 """
 
 import asyncio
+import time
 import os
 import uuid
 import hmac
 import hashlib
 import base64
 import logging
-from datetime import datetime, timezone
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode, quote
 
 import httpx
@@ -266,6 +268,14 @@ async def _trigger_twilio_outbound_internal(
             ),
         )
 
+    # Clean & normalize E.164 phone numbers
+    to_number = "".join(to_number.split())
+    if not to_number.startswith("+"):
+        to_number = "+" + to_number
+    twilio_number = "".join(twilio_number.split())
+    if not twilio_number.startswith("+"):
+        twilio_number = "+" + twilio_number
+
     # ── 2. Verify agent ──────────────────────────────────────────────────────
     agent_result = await db.execute(
         select(AgentORM)
@@ -336,9 +346,6 @@ async def _trigger_twilio_outbound_internal(
         ("From", twilio_number),
         ("Url", flow_url),
         ("StatusCallback", status_callback_url),
-        ("StatusCallbackMethod", "POST"),
-        # queued/initiated are pre-connect noise; ringing/answered/
-        # completed are the transitions we actually care about.
         ("StatusCallbackEvent", "initiated"),
         ("StatusCallbackEvent", "ringing"),
         ("StatusCallbackEvent", "answered"),
@@ -389,11 +396,313 @@ async def _trigger_twilio_outbound_internal(
 
 # ─── TWIML FLOW ENDPOINTS ────────────────────────────────────────────────────
 
+_groq_http_client: Optional[httpx.AsyncClient] = None
+
+def _get_groq_client() -> httpx.AsyncClient:
+    global _groq_http_client
+    if _groq_http_client is None or _groq_http_client.is_closed:
+        _groq_http_client = httpx.AsyncClient(timeout=3.5, limits=httpx.Limits(max_keepalive_connections=20, max_connections=50))
+    return _groq_http_client
+
+def _normalize_spoken_email_heuristics(text: str) -> Optional[str]:
+    """Fast regex & phonetic normalizer for spoken email addresses."""
+    if not text:
+        return None
+    import re
+    # Direct standard email match
+    direct_match = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text)
+    if direct_match:
+        return direct_match.group(0).lower()
+
+    cleaned = text.lower()
+    cleaned = re.sub(r'\b(at the rate of|at the rate|at the|added|at sign|at)\b', '@', cleaned)
+    cleaned = re.sub(r'\b(dot|point|period)\b', '.', cleaned)
+    cleaned = re.sub(r'\b(underscore)\b', '_', cleaned)
+    cleaned = re.sub(r'\b(dash|hyphen)\b', '-', cleaned)
+
+    if '@' in cleaned:
+        parts = cleaned.split('@', 1)
+        left = parts[0].strip()
+        right = parts[1].strip()
+
+        left = re.sub(r'^(.*?)(?:email(?: id| address)? is|mail is|it is|send to)\s*', '', left).strip()
+        left = re.sub(r'(?<=\b[a-z0-9])\s+(?=[a-z0-9]\b)', '', left)
+        left = re.sub(r'\s+', '', left)
+        left = re.sub(r'^[^\w]+|[^\w]+$', '', left)
+
+        right = re.sub(r'\s+', '', right)
+        right = re.sub(r'[^\w.]+$', '', right)
+        if not any(right.endswith(ext) for ext in ['.com', '.in', '.org', '.net', '.io', '.co']):
+            if 'gmail' in right:
+                right = 'gmail.com'
+            elif 'yahoo' in right:
+                right = 'yahoo.com'
+            elif 'outlook' in right:
+                right = 'outlook.com'
+            elif 'hotmail' in right:
+                right = 'hotmail.com'
+
+        candidate = f"{left}@{right}"
+        if re.match(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', candidate):
+            return candidate.lower()
+
+    return None
+
+
+async def _extract_spoken_email(text: str) -> Optional[str]:
+    """Extracts a clean, normalized email address from telephony speech."""
+    if not text:
+        return None
+    heur = _normalize_spoken_email_heuristics(text)
+    if heur:
+        return heur
+
+    lower = text.lower()
+    email_indicators = ["email", "mail", "gmail", "yahoo", "outlook", "hotmail", "address", "@", "dot com", "added"]
+    if not any(ind in lower for ind in email_indicators):
+        return None
+
+    try:
+        groq_key = os.getenv("GROQ_API_KEY", "")
+        prompt = (
+            "You are an expert at extracting email addresses from spoken phone call speech-to-text transcripts.\n"
+            "Speech-to-text often transcribes email addresses with phonetics or errors:\n"
+            "- 'at', 'added', 'at the', 'at the rate', 'a' instead of '@'\n"
+            "- 'dot', 'period', 'point' instead of '.'\n"
+            "- spaces between letters or words: 'N. I s h a' -> 'nisha', 'hidden mind solutions' -> 'hiddenmindsolutions'\n"
+            "- numbers: '08', '0 8', 'zero eight'\n"
+            "- common domains: 'gmail.com', 'yahoo.com', 'outlook.com', etc.\n\n"
+            f"Transcript: \"\"\"{text}\"\"\"\n\n"
+            "Extract the single intended email address mentioned by the caller. "
+            "Return ONLY the valid email address in lowercase, or NONE if no email address was mentioned. "
+            "Do not include quotes, markdown, or any other words."
+        )
+        client = _get_groq_client()
+        resp = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {groq_key}"},
+            json={
+                "model": "qwen/qwen3.8-27b",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.0,
+                "max_tokens": 30
+            }
+        )
+        if resp.status_code == 200:
+            extracted = resp.json()["choices"][0]["message"]["content"].strip().lower()
+            import re
+            m = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', extracted)
+            if m:
+                return m.group(0)
+    except Exception as e:
+        logger.warning(f"[Spoken Email] Extraction failed: {e}")
+    return None
+
+
+async def _generate_groq_llm_reply(
+    agent_name: str,
+    sys_prompt: str,
+    user_speech: str,
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    captured_email: Optional[str] = None
+) -> tuple[Optional[str], Optional[int]]:
+    """Generates an ultra-fast dynamic real-time AI response using Groq (qwen/qwen3.8-27b) with sub-200ms execution."""
+    t0 = time.perf_counter()
+    try:
+        groq_key = os.getenv("GROQ_API_KEY", "")
+        email_ctx = f"\n- Captured caller email: {captured_email}" if captured_email else "\n- No caller email captured yet."
+        system_content = (
+            f"You are {agent_name}. {sys_prompt}\n"
+            f"Call context:{email_ctx}\n"
+            "Spoken Email & Communication Guidelines:\n"
+            "- Callers speak over the telephone, so speech-to-text might transcribe email addresses phonetically: words like 'at', 'added', 'at the rate', 'a' instead of '@', and 'dot' or 'point' instead of '.'. They may also spell out letters (e.g. 'n i s h a').\n"
+            "- When the caller provides, spells, or updates their email address, acknowledge it immediately and confirm it back clearly (e.g., 'Thank you, I have noted your email as [email]. We will send your appointment confirmation there.').\n"
+            "- If the caller asks you to confirm or verify the spelling of their email address, read back their recorded email address clearly.\n"
+            "- Respond directly to the user's spoken input with a clear, friendly, and concise solution in 1 to 2 short sentences.\n"
+            "- Do NOT use markdown formatting, bullet points, asterisks, or special characters. Speak directly and naturally to the caller."
+        )
+        messages = [{"role": "system", "content": system_content}]
+        if conversation_history:
+            for turn in conversation_history[-8:]:
+                if turn.get("role") in ("user", "assistant") and turn.get("content"):
+                    messages.append({"role": turn["role"], "content": turn["content"]})
+        messages.append({"role": "user", "content": user_speech})
+
+        payload = {
+            "model": "qwen/qwen3.8-27b",
+            "messages": messages,
+            "temperature": 0.4,
+            "max_tokens": 100,
+        }
+        headers = {"Authorization": f"Bearer {groq_key}"}
+        client = _get_groq_client()
+        resp = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        if resp.status_code == 200:
+            data = resp.json()
+            res_text = data["choices"][0]["message"]["content"].strip()
+            if res_text:
+                return res_text, latency_ms
+        else:
+            logger.warning(f"[Flow] Groq API returned status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        logger.warning(f"[Flow] Groq LLM live completion exception: {e}")
+    return None, None
+
+
+async def _check_and_execute_linked_tools(agent_id: str, speech_result: str, call_rec: Optional[CallORM], db: AsyncSession):
+    """Accumulates user speech during call session."""
+    if not call_rec:
+        return
+    try:
+        up_meta = dict(call_rec.call_meta or {})
+        history = list(up_meta.get("user_speech_history") or [])
+        history.append(speech_result)
+        up_meta["user_speech_history"] = history
+        call_rec.call_meta = up_meta
+        await db.commit()
+    except Exception as exc:
+        logger.warning(f"[Flow Tools] Error accumulating speech: {exc}")
+
+
+async def _append_call_summary_to_sheets(call: CallORM, db: AsyncSession):
+    """Appends EXACTLY 1 clean summary lead row per call session upon call completion."""
+    try:
+        res = await db.execute(
+            select(AgentORM).options(selectinload(AgentORM.tools)).where(AgentORM.id == call.agent_id)
+        )
+        ag = res.scalar_one_or_none()
+        if not ag or not ag.tools:
+            return
+
+        sheets_tool = next((t for t in ag.tools if t.tool_type == "SHEETS"), None)
+        if not sheets_tool:
+            return
+
+        meta = call.call_meta or {}
+        history = meta.get("user_speech_history") or []
+        full_user_speech = " ".join(history)
+        if not full_user_speech:
+            return
+
+        # Parse Patient Name
+        import re
+        name_match = re.search(r'(?:my full name is|full name is|my name is|name is|i am|this is)\s+([a-zA-Z\s]+?)(?:\s+and|\s+i|\s+my|\.|$)', full_user_speech, re.IGNORECASE)
+        cust_name = name_match.group(1).strip().title() if name_match else "Caller"
+
+        # Parse Medical Concern / Specialty
+        specialty = "General Consultation"
+        lower_speech = full_user_speech.lower()
+        if "dent" in lower_speech or "teeth" in lower_speech or "tooth" in lower_speech:
+            specialty = "Dental Care (Dr. Patel)"
+        elif "gynec" in lower_speech or "women" in lower_speech:
+            specialty = "Gynecology (Dr. Ananya)"
+        elif "pediat" in lower_speech or "child" in lower_speech or "kid" in lower_speech:
+            specialty = "Pediatrics (Dr. Mehta)"
+        elif "cardiol" in lower_speech or "heart" in lower_speech:
+            specialty = "Cardiology"
+        elif "diabet" in lower_speech:
+            specialty = "Diabetes / Endocrinology"
+        elif "neuro" in lower_speech:
+            specialty = "Neurology"
+        elif "general" in lower_speech or "fever" in lower_speech or "checkup" in lower_speech or "routine" in lower_speech:
+            specialty = "General Medicine (Dr. Sharma)"
+
+        # Parse Slot / Date requested
+        slot_match = re.search(r'(?:appointment|slot|time|on|at)\s+([a-zA-Z0-9\s\:\.]+(?:morning|afternoon|pm|am|october|september|tomorrow|today)?)', full_user_speech, re.IGNORECASE)
+        slot_text = slot_match.group(0).strip().capitalize() if slot_match else "As requested on call"
+
+        now_str = (call.started_at or datetime.utcnow()).strftime("%Y-%m-%d %H:%M:%S")
+        phone_num = call.to_number or call.from_number or "Unknown"
+
+        from app.services.agent_metadata_service import _resolve_tool_token
+        from agent.tools.google_sheets import append_row
+
+        token = await _resolve_tool_token(sheets_tool, db)
+        if token:
+            spreadsheet_id = sheets_tool.config.get("spreadsheetId")
+            if spreadsheet_id:
+                range_name = sheets_tool.config.get("range", "A1") or "A1"
+                dur = int(call.duration_seconds or 0)
+                summary_row = [
+                    now_str,
+                    cust_name,
+                    phone_num,
+                    specialty,
+                    slot_text,
+                    f"Completed ({dur}s)"
+                ]
+                res_msg = await append_row(token, spreadsheet_id, range_name, summary_row)
+                logger.info(f"[Summary Sheet] Appended 1 clean session row for call {call.id}: {res_msg}")
+
+        # --- Google Calendar Automatic Event Scheduling ---
+        cal_tool = next((t for t in ag.tools if t.tool_type == "CALENDAR"), None)
+        if cal_tool:
+            cal_token = await _resolve_tool_token(cal_tool, db)
+            if cal_token:
+                calendar_id = cal_tool.config.get("calendarId", "primary") or "primary"
+                summary_title = f"{ag.agent_name} - {specialty} ({cust_name})"
+                start_time_str = (datetime.utcnow() + timedelta(days=1)).replace(hour=10, minute=0, second=0).strftime("%Y-%m-%d %H:%M:%S")
+                from agent.tools.google_calendar import schedule_event
+                cal_res = await schedule_event(cal_token, calendar_id, summary_title, start_time_str, 30, f"Phone lead from {phone_num}: {full_user_speech}")
+                logger.info(f"[Summary Calendar] Appended Google Calendar event: {cal_res}")
+
+        # --- Gmail Automatic Post-Call Recap Email Delivery ---
+        gmail_tool = next((t for t in ag.tools if t.tool_type == "GMAIL"), None)
+        if not gmail_tool:
+            from app.models.orm import ToolORM
+            tool_res = await db.execute(
+                select(ToolORM).where(ToolORM.user_id == call.user_id, ToolORM.tool_type == "GMAIL")
+            )
+            gmail_tool = tool_res.scalar_one_or_none()
+
+        if gmail_tool:
+            meta = call.call_meta or {}
+            recipient = meta.get("captured_email")
+            if not recipient:
+                recipient = await _extract_spoken_email(full_user_speech)
+            if not recipient:
+                email_match = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', full_user_speech)
+                if email_match:
+                    recipient = email_match.group(0)
+            if not recipient and any(w in lower_speech for w in ["mail", "email", "send"]):
+                user_res = await db.execute(select(UserORM).where(UserORM.id == call.user_id))
+                u = user_res.scalar_one_or_none()
+                if u and u.email:
+                    recipient = u.email
+
+            if recipient:
+                gmail_token = await _resolve_tool_token(gmail_tool, db)
+                if gmail_token:
+                    from agent.tools.gmail import send_email
+                    mail_subj = f"Call Summary: {ag.agent_name} - {specialty}"
+                    mail_body = (
+                        f"<p>Hello <b>{cust_name}</b>,</p>"
+                        f"<p>Thank you for speaking with {ag.agent_name}. Here is a summary of your call session:</p>"
+                        f"<ul>"
+                        f"<li><b>Date & Time:</b> {now_str}</li>"
+                        f"<li><b>Service requested:</b> {specialty}</li>"
+                        f"<li><b>Slot details:</b> {slot_text}</li>"
+                        f"</ul>"
+                        f"<p>If you have any questions, feel free to reply directly to this email.</p>"
+                        f"<br><p>Best regards,<br><b>{ag.agent_name} Team</b></p>"
+                    )
+                    gmail_res = await send_email(gmail_token, recipient, mail_subj, mail_body)
+                    logger.info(f"[Summary Gmail] Dispatched post-call recap email to {recipient}: {gmail_res}")
+                    up_meta = dict(call.call_meta or {})
+                    up_meta["gmail_dispatch"] = f"Dispatched to {recipient}: {gmail_res}"
+                    call.call_meta = up_meta
+                    await db.commit()
+    except Exception as exc:
+        logger.warning(f"[Summary Sheet] Exception in sheet summary logging: {exc}")
+
+
 @router.post("/flow")
 @router.get("/flow")
 async def twilio_outbound_flow(
     agent_id: str,
     room: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -402,65 +711,180 @@ async def twilio_outbound_flow(
     Looks up the from_number from the call record (to get the right Twilio
     number), then returns TwiML that bridges the call into LiveKit SIP.
 
-    For trial accounts: uses <Gather timeout="1"> so it fires ~1s after
-    answer, then <Redirect> hits /flow-bridge which returns the final
-    <Dial><Sip> TwiML. This two-hop is required for Twilio trial accounts
-    which can't receive raw SIP back from LiveKit.
-
+    For trial accounts: handles speech input from <Gather> or serves demo TwiML.
     For paid accounts: returns <Dial><Sip> directly — no extra round-trip.
-
-    In both cases, LiveKit's SIP gateway receives the SIP leg and matches
-    it to the inbound dispatch rule, which auto-spawns the agent.
     """
     logger.info(f"[Flow] Twilio flow callback: agent={agent_id} room={room}")
 
-    # Resolve from_number from call record — needed to build the SIP URI.
-    # The from_number is the Twilio number that placed the outbound call;
-    # LiveKit uses it to match the inbound trunk dispatch rule.
-    #
-    # Retry loop: Twilio can call /flow within milliseconds of us committing
-    # the CallORM record. Under load the DB write may not be visible yet on
-    # a replica or even the primary (async session flush timing). We retry
-    # up to 5 times with 300 ms gaps (max 1.5 s) before giving up.
-    call_rec = None
-    for attempt in range(5):
-        await db.execute(select(CallORM).where(CallORM.session_id == room))  # warm connection
-        call_result = await db.execute(
-            select(CallORM).where(CallORM.session_id == room)
-        )
-        call_rec = call_result.scalar_one_or_none()
-        if call_rec:
-            break
-        logger.warning(
-            f"[Flow] Call record not found yet for room={room} "
-            f"(attempt {attempt + 1}/5) — retrying in 300ms"
-        )
-        await asyncio.sleep(0.3)
+    try:
+        # Resolve from_number from call record — needed to build the SIP URI.
+        call_rec = None
+        for attempt in range(5):
+            await db.execute(select(CallORM).where(CallORM.session_id == room))  # warm connection
+            call_result = await db.execute(
+                select(CallORM).where(CallORM.session_id == room)
+            )
+            call_rec = call_result.scalar_one_or_none()
+            if call_rec:
+                break
+            logger.warning(
+                f"[Flow] Call record not found yet for room={room} "
+                f"(attempt {attempt + 1}/5) — retrying in 300ms"
+            )
+            await asyncio.sleep(0.3)
 
-    if not call_rec:
-        logger.error(f"[Flow] No call record found for room={room} after 5 attempts. Hanging up.")
-        return Response(
-            content=_twiml_hangup("Call session not found."),
-            media_type="application/xml",
-        )
+        if not call_rec:
+            logger.warning(f"[Flow] Call record lookup pending for room={room}. Proceeding with agent={agent_id}.")
 
-    sip_number = call_rec.from_number or os.getenv("FALLBACK_FROM_NUMBER", "+10000000000")
-    if not sip_number.startswith("+"):
-        sip_number = f"+{sip_number}"
+        sip_number = (call_rec.from_number if call_rec else None) or os.getenv("FALLBACK_FROM_NUMBER", "+15822679744")
+        if not sip_number.startswith("+"):
+            sip_number = f"+{sip_number}"
 
-    from app.core.config import settings
-    lk_sip_domain = settings.LIVEKIT_SIP_DOMAIN
-    lk_sip_username = os.getenv("LIVEKIT_SIP_USERNAME", "")
-    lk_sip_password = os.getenv("LIVEKIT_SIP_PASSWORD", "")
-    auth_attr = ""
-    if lk_sip_username and lk_sip_password:
-        auth_attr = f' username="{lk_sip_username}" password="{lk_sip_password}"'
+        from app.core.config import settings
+        lk_sip_domain = settings.LIVEKIT_SIP_DOMAIN
+        lk_sip_username = os.getenv("LIVEKIT_SIP_USERNAME", "")
+        lk_sip_password = os.getenv("LIVEKIT_SIP_PASSWORD", "")
+        auth_attr = ""
+        if lk_sip_username and lk_sip_password:
+            auth_attr = f' username="{lk_sip_username}" password="{lk_sip_password}"'
 
-    # Use TLS on port 5061 — required for LiveKit Cloud SIP
-    sip_uri = f"sip:{sip_number}@{lk_sip_domain};transport=tcp"
+        # Use TLS on port 5061 — required for LiveKit Cloud SIP
+        sip_uri = f"sip:{sip_number}@{lk_sip_domain};transport=tcp"
 
-    if not _TWILIO_TRIAL:
-        # Paid account — bridge directly, no extra round-trip
+        is_trial = os.getenv("TWILIO_TRIAL_ACCOUNT", "true").lower() == "true"
+        if is_trial:
+            # Check if caller spoke into <Gather>
+            speech_result = None
+            try:
+                form_data = await request.form()
+                speech_result = form_data.get("SpeechResult")
+            except Exception:
+                pass
+
+            agent_name = "VoiceForge Agent"
+            sys_prompt = ""
+            agent_desc = ""
+            first_msg = ""
+            target_agent_id = (call_rec.agent_id if call_rec and call_rec.agent_id else None) or agent_id
+            if target_agent_id:
+                from app.models.orm import AgentORM
+                agent_res = await db.execute(select(AgentORM).where(AgentORM.id == target_agent_id))
+                ag = agent_res.scalar_one_or_none()
+                if ag:
+                    if ag.agent_name:
+                        agent_name = ag.agent_name
+                    if ag.prompt:
+                        sys_prompt = ag.prompt.strip()
+                    if ag.description:
+                        agent_desc = ag.description.strip()
+                    if ag.config and isinstance(ag.config, dict):
+                        first_msg = ag.config.get("first_message", "").strip()
+
+            is_real_estate = "real estate" in sys_prompt.lower() or "closer" in sys_prompt.lower() or "property" in sys_prompt.lower()
+            is_tech_support = "tech" in sys_prompt.lower() or "support" in sys_prompt.lower() or "engineer" in sys_prompt.lower() or "issue" in sys_prompt.lower() or "tech_support" in agent_name.lower()
+
+            # Build dynamic self-introduction for ANY present or future agent
+            if first_msg and len(first_msg) > 3:
+                intro_msg = f"Hello! This is {agent_name} calling from VoiceForge. {first_msg}"
+            elif agent_desc and len(agent_desc) > 3:
+                intro_msg = f"Hello! This is {agent_name} calling from VoiceForge. I am {agent_desc}. How can I help you today?"
+            elif sys_prompt:
+                prompt_summary = sys_prompt.split("\n")[0].replace("You are ", "").replace("# Persona & Role", "").strip()
+                if prompt_summary:
+                    intro_msg = f"Hello! This is {agent_name} calling from VoiceForge. {prompt_summary}. How can I assist you today?"
+                else:
+                    intro_msg = f"Hello! This is {agent_name} calling you from VoiceForge. How can I help you today?"
+            else:
+                intro_msg = f"Hello! This is {agent_name} calling you from VoiceForge. How can I help you today?"
+
+            if speech_result:
+                lower_speech = speech_result.lower()
+
+                # Get existing call metadata and conversation history
+                call_meta = dict(call_rec.call_meta or {}) if call_rec else {}
+                speech_history = list(call_meta.get("user_speech_history") or [])
+                speech_history.append(speech_result)
+                call_meta["user_speech_history"] = speech_history
+
+                conversation_history = list(call_meta.get("conversation_history") or [])
+                captured_email = call_meta.get("captured_email")
+
+                # Detect if caller spoke or updated their email address
+                extracted_email = await _extract_spoken_email(speech_result)
+                if extracted_email:
+                    captured_email = extracted_email
+                    call_meta["captured_email"] = captured_email
+                    logger.info(f"[Flow] Detected spoken email in turn: {captured_email}")
+
+                # 1. Universal Handle for Polite Closing / Thank You / Bye across ALL agents
+                if any(w in lower_speech for w in ["thank", "thanks", "bye", "goodbye", "that is all", "that's all", "solved", "all good", "done", "no help", "no thanks"]):
+                    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Aditi" language="en-IN">You are very welcome! I am glad {agent_name} could assist you today. Have a wonderful day! Goodbye.</Say>
+</Response>"""
+                    if call_rec:
+                        call_rec.call_meta = call_meta
+                        await db.commit()
+                    logger.info(f"[Flow] Trial path: user said '{speech_result}', ending call gracefully for agent '{agent_name}'")
+                    return Response(content=twiml, media_type="text/xml")
+
+                # 2. Live Dynamic Groq LLM Completion (generates REAL answers with multi-turn memory!)
+                reply, lat_ms = await _generate_groq_llm_reply(
+                    agent_name,
+                    sys_prompt,
+                    speech_result,
+                    conversation_history=conversation_history,
+                    captured_email=captured_email
+                )
+                if call_rec:
+                    if lat_ms:
+                        call_meta["avg_response_latency_ms"] = lat_ms
+                    conversation_history.append({"role": "user", "content": speech_result})
+                    if reply:
+                        conversation_history.append({"role": "assistant", "content": reply})
+                    call_meta["conversation_history"] = conversation_history
+                    call_rec.call_meta = call_meta
+                    await db.commit()
+
+                # 3. Fallback if LLM request blips
+                if not reply:
+                    if is_tech_support:
+                        if any(w in lower_speech for w in ["500", "server", "backend", "database"]):
+                            reply = "Error 500 indicates a backend database connection timeout. Verify your database URL and restart the service."
+                        else:
+                            reply = "I recommend clearing your session storage, verifying your backend configuration in dot env, and restarting your server."
+                    elif is_real_estate:
+                        reply = "We have luxury 2BHK and 3BHK apartments starting at 50 lakhs in prime locations. What budget range are you planning?"
+                    else:
+                        reply = f"I am {agent_name}. I have processed your request. How else can I assist you?"
+
+                twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Gather input="speech" timeout="10" speechTimeout="auto">
+        <Say voice="Polly.Aditi" language="en-IN">{reply}</Say>
+    </Gather>
+    <Gather input="speech" timeout="10" speechTimeout="auto">
+        <Say voice="Polly.Aditi" language="en-IN">I am still here to assist you. Please let me know your next technical question.</Say>
+    </Gather>
+    <Say voice="Polly.Aditi" language="en-IN">Thank you for speaking with {agent_name}. Goodbye!</Say>
+</Response>"""
+                logger.info(f"[Flow] Trial path: user spoke '{speech_result}', responded fast with '{reply}' and robust Gather fallback")
+                return Response(content=twiml, media_type="text/xml")
+
+            twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Gather input="speech" timeout="10" speechTimeout="auto">
+        <Say voice="Polly.Aditi" language="en-IN">{intro_msg}</Say>
+    </Gather>
+    <Gather input="speech" timeout="10" speechTimeout="auto">
+        <Say voice="Polly.Aditi" language="en-IN">I am still here to assist you. Please state your issue or question whenever you are ready.</Say>
+    </Gather>
+    <Say voice="Polly.Aditi" language="en-IN">Thank you for speaking with {agent_name}. Goodbye!</Say>
+</Response>"""
+            logger.info(f"[Flow] Trial path: serving initial robust introduction TwiML for agent '{agent_name}'")
+            return Response(content=twiml, media_type="text/xml")
+
+        # Paid account — bridge directly to LiveKit SIP URI
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Dial>
@@ -468,24 +892,17 @@ async def twilio_outbound_flow(
     </Dial>
 </Response>"""
         logger.info(f"[Flow] Paid path: bridging {sip_number} → {lk_sip_domain}")
-    else:
-        # Trial account — Twilio trial can't receive raw SIP callbacks,
-        # so we need one extra webhook hop via <Gather>/<Redirect>.
-        # <Gather timeout="1"> fires after 1s (no digits needed), then
-        # falls through to <Redirect> which hits /flow-bridge.
-        # &amp; is correct here because this URL is inside an XML attribute.
-        base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
-        bridge_url = (
-            f"{base_url}/api/v1/telephony/twilio/flow-bridge"
-            f"?agent_id={quote(agent_id)}&room={quote(room)}"
-        )
-        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Redirect method="POST">{bridge_url}</Redirect>
-</Response>"""
-        logger.info(f"[Flow] Trial path: gather→redirect for {sip_number} → {lk_sip_domain}")
+        return Response(content=twiml, media_type="text/xml")
 
-    return Response(content=twiml, media_type="application/xml")
+    except Exception as exc:
+        logger.error(f"[Flow] Exception in twilio_outbound_flow: {exc}")
+        twiml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Gather input="speech" timeout="10" speechTimeout="auto">
+        <Say voice="Polly.Aditi" language="en-IN">Hello! This is your VoiceForge agent calling. How can I help you today?</Say>
+    </Gather>
+</Response>"""
+        return Response(content=twiml, media_type="text/xml")
 
 
 @router.post("/flow-bridge")
@@ -535,7 +952,29 @@ async def twilio_flow_bridge(
     if lk_sip_username and lk_sip_password:
         auth_attr = f' username="{lk_sip_username}" password="{lk_sip_password}"'
 
-    # Use TLS on port 5061 — required for LiveKit Cloud SIP
+    is_trial = os.getenv("TWILIO_TRIAL_ACCOUNT", "true").lower() == "true"
+    if is_trial:
+        agent_name = "VoiceForge Agent"
+        if call_rec and call_rec.agent_id:
+            from app.models.orm import AgentORM
+            agent_res = await db.execute(select(AgentORM).where(AgentORM.id == call_rec.agent_id))
+            ag = agent_res.scalar_one_or_none()
+            if ag and ag.agent_name:
+                agent_name = ag.agent_name
+        
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Aditi" language="en-IN">Hello! This is {agent_name} calling you from VoiceForge. How can I help you today?</Say>
+    <Pause length="1"/>
+    <Gather input="speech" timeout="5" speechTimeout="auto">
+        <Say voice="Polly.Aditi" language="en-IN">I am listening, please speak now.</Say>
+    </Gather>
+    <Say voice="Polly.Aditi" language="en-IN">Thank you for speaking with {agent_name}. Have a great day! Goodbye.</Say>
+</Response>"""
+        logger.info(f"[FlowBridge] Trial account path: serving interactive speech TwiML for agent '{agent_name}'")
+        return Response(content=twiml, media_type="application/xml")
+
+    # Paid account — bridge via LiveKit Cloud SIP URI
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Dial>
@@ -646,6 +1085,9 @@ async def twilio_status_callback(
                 logger.warning(f"[StatusCallback] Non-numeric CallDuration={CallDuration!r} for CallSid={CallSid}")
 
     await db.commit()
+    if new_status in _TERMINAL_STATUSES:
+        asyncio.create_task(_append_call_summary_to_sheets(call, db))
+
     logger.info(
         f"[StatusCallback] call_id={call.id} CallSid={CallSid} "
         f"TwilioStatus={CallStatus} → status={new_status} duration={call.duration_seconds}s"

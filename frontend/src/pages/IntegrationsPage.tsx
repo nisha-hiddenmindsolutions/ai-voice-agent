@@ -359,13 +359,22 @@ export const IntegrationsPage: React.FC = () => {
                                             )}
                                         </div>
                                     ) : oauthIntegration ? (
-                                        <button 
-                                            onClick={() => handleDisconnect(oauthIntegration.id)}
-                                            className="btn-danger w-full flex items-center justify-center gap-1.5 h-10"
-                                        >
-                                            <Trash2 size={13} />
-                                            Disconnect Server
-                                        </button>
+                                        <div className="flex flex-col gap-2">
+                                            <button 
+                                                onClick={() => handleConnect(int.id)}
+                                                className="btn-primary w-full flex items-center justify-between px-4 text-xs font-bold uppercase tracking-wider h-10 shadow-sm"
+                                            >
+                                                <span>Reconnect & Grant Scopes</span>
+                                                <ArrowRight size={13} />
+                                            </button>
+                                            <button 
+                                                onClick={() => handleDisconnect(oauthIntegration.id)}
+                                                className="btn-danger w-full flex items-center justify-center gap-1.5 h-10"
+                                            >
+                                                <Trash2 size={13} />
+                                                Disconnect Server
+                                            </button>
+                                        </div>
                                     ) : (
                                         <button 
                                             onClick={() => handleConnect(int.id)}

@@ -75,7 +75,7 @@ class ToolORM(Base):
     description: Mapped[str] = mapped_column(String, default="")
     
     # API configuration
-    tool_type: Mapped[str] = mapped_column(String, default="WEBHOOK") # WEBHOOK, CALENDAR, SHEETS
+    tool_type: Mapped[str] = mapped_column(String, default="WEBHOOK") # WEBHOOK, CALENDAR, SHEETS, GMAIL
     category: Mapped[str] = mapped_column(String, default="Webhooks") # Webhooks, AI Workflows, Google Apps
     url: Mapped[str] = mapped_column(String, nullable=True) # Webhook URL
     method: Mapped[str] = mapped_column(String, default="POST")

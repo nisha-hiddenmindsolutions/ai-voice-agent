@@ -35,6 +35,16 @@ const N8NIcon = ({ size = 22 }: { size?: number }) => (
 </svg>
 );
 
+const GoogleGmailIcon = ({ size = 22 }: { size?: number }) => (
+  <svg viewBox="0 0 48 48" style={{ width: size, height: size }} className="shrink-0 animate-fade-in">
+    <path fill="#4285F4" d="M45,16.2V35c0,2.2-1.8,4-4,4H35V21.5L45,16.2z"/>
+    <path fill="#34A853" d="M3,16.2V35c0,2.2,1.8,4,4,4h8V21.5L3,16.2z"/>
+    <path fill="#EA4335" d="M35,13v8.5L45,16.2V13c0-2.8-3.1-4.5-5.5-3.1L35,13z"/>
+    <path fill="#FBBC05" d="M13,13l-4.5-3.1C6.1,8.5,3,10.2,3,13v3.2l10,5.3V13z"/>
+    <path fill="#EA4335" d="M13,13l11,7.3L35,13v8.5L24,28.8L13,21.5V13z"/>
+  </svg>
+);
+
 const CustomWebhookIcon = ({ size = 22 }: { size?: number }) => (
   <svg xmlns="http://www.w3.org/2000/svg" style={{ width: size, height: size }} className="shrink-0 animate-fade-in" viewBox="0 0 48 48">
     <path fill="#0053b3" d="M35,37c-2.2,0-4-1.8-4-4s1.8-4,4-4s4,1.8,4,4S37.2,37,35,37z"/>
@@ -52,6 +62,8 @@ const renderToolIcon = (toolType: string, size = 22) => {
       return <GoogleCalendarIcon size={size} />;
     case 'SHEETS':
       return <GoogleSheetsIcon size={size} />;
+    case 'GMAIL':
+      return <GoogleGmailIcon size={size} />;
     case 'N8N':
       return <N8NIcon size={size} />;
     default:
@@ -467,6 +479,27 @@ export const ToolManager: React.FC = () => {
                       <p className="text-[10px] text-[var(--text-muted)] mt-0.5">Log session entries & user profiles</p>
                     </div>
                   </button>
+
+                  <button 
+                    onClick={() => {
+                        setNewTool({
+                          ...newTool,
+                          tool_type: 'GMAIL',
+                          category: 'Google Apps',
+                          method: 'NATIVE',
+                          name: 'Gmail Email Sender',
+                          description: 'Composes and sends custom emails or post-call recaps via Gmail.'
+                        });
+                        setCreationStep('config');
+                    }}
+                    className="flex flex-col items-center gap-3 p-5 rounded-xl bg-[var(--surface-secondary)] border border-[var(--border)] hover:border-[var(--primary)] hover:bg-[var(--surface)] transition text-center group"
+                  >
+                    <div className="w-10 h-10 rounded-lg bg-[var(--surface)] flex items-center justify-center border border-[var(--border)]"><GoogleGmailIcon size={20} /></div>
+                    <div>
+                      <h4 className="text-xs font-bold text-[var(--text-primary)]">Google Gmail</h4>
+                      <p className="text-[10px] text-[var(--text-muted)] mt-0.5">Send custom emails & post-call recaps</p>
+                    </div>
+                  </button>
                 </div>
               ) : (
                 /* STEP 2: CONFIGURE VALUES */
@@ -695,6 +728,43 @@ export const ToolManager: React.FC = () => {
                         <p className="text-[8px] text-[var(--text-muted)] ml-1 mt-0.5">
                           Only needed if you want the agent to write to a specific tab, e.g. <code>Leads!A1</code>. By default the agent writes to whichever tab is first in the spreadsheet — it no longer assumes a tab literally named "Sheet1".
                         </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {newTool.tool_type === 'GMAIL' && (
+                    <div className="space-y-3 animate-in fade-in duration-200">
+                      <div className="p-3 bg-[var(--surface-secondary)] border border-[var(--border)] rounded-xl space-y-1">
+                        <span className="text-[9px] font-bold text-[var(--primary)] uppercase tracking-wider block">GMAIL API INTEGRATION</span>
+                        <p className="text-[9px] text-[var(--text-secondary)] leading-relaxed font-medium">
+                          Empowers the voice agent to compose and send custom emails during calls or dispatch automated recap summaries upon call completion.
+                        </p>
+                      </div>
+
+                      {/* Google Connection Status */}
+                      {integrations.filter(i => i.provider === 'google').length > 0 ? (
+                        <div className="flex items-center gap-2 p-3 bg-emerald-500/5 border border-emerald-500/20 rounded-xl">
+                          <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                          <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Google Account Connected</span>
+                          <span className="text-[9px] text-[var(--text-muted)] ml-auto">Gmail Auth Handled</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 p-3 bg-amber-500/5 border border-amber-500/20 rounded-xl">
+                          <div className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                          <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">No Google Account Connected</span>
+                          <button onClick={() => window.location.href = '/integrations'} className="text-[9px] font-bold text-[var(--primary)] uppercase tracking-wider ml-auto hover:underline">Connect Now</button>
+                        </div>
+                      )}
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-wider ml-1">Default Subject Prefix (Optional)</label>
+                        <input 
+                          className="input-field font-mono"
+                          placeholder="e.g. Call Recap: "
+                          value={newTool.config?.subjectPrefix || ''}
+                          onChange={e => setNewTool({...newTool, config: {...newTool.config, subjectPrefix: e.target.value}})}
+                        />
+                        <p className="text-[8px] text-[var(--text-muted)] ml-1 mt-0.5">Optional prefix added before generated email subjects.</p>
                       </div>
                     </div>
                   )}

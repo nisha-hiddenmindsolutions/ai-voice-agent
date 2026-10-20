@@ -116,7 +116,7 @@ const AgentConfigurePage = () => {
     stt: { provider: 'sarvam', model: 'saaras:v3', language: 'hi-IN' },
     llm: { provider: 'groq', model: 'llama-3.3-70b-versatile', temperature: 0.7 },
     tts: { provider: 'sarvam', model: 'bulbul:v3', voice: 'neha', pace: 1.0 },
-    vad: { activation_threshold: 0.5, min_speech_duration: 0.3, min_silence_duration: 0.8, padding_duration: 0.1 },
+    vad: { activation_threshold: 0.5, min_speech_duration: 0.3, min_silence_duration: 0.4, padding_duration: 0.1 },
     tools: []
   });
 

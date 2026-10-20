@@ -172,6 +172,8 @@ async def _service_account_token(integration: IntegrationORM) -> str | None:
         scopes = integration.scopes or [
             "https://www.googleapis.com/auth/calendar.events",
             "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/gmail.readonly",
         ]
         creds = service_account.Credentials.from_service_account_info(
             integration.credentials, scopes=scopes

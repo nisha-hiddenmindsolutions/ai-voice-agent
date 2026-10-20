@@ -104,21 +104,21 @@ const BLUEPRINTS = [
     name: "Real Estate Closer",
     icon: "🏘️",
     prompt: "You are a high-performing real estate closer. Your tone is professional, persuasive, and knowledgeable. Focus on lead qualification and property value points.",
-    vad: { activation_threshold: 0.5, min_speech_duration: 0.3, min_silence_duration: 0.8 },
+    vad: { activation_threshold: 0.5, min_speech_duration: 0.3, min_silence_duration: 0.4 },
     llm: { provider: 'groq', model: 'llama-3.3-70b-versatile' }
   },
   {
     name: "Concierge AI",
     icon: "🤵",
     prompt: "You are an elegant concierge. You assist with scheduling, recommendations, and local knowledge. Your tone is refined, helpful, and sophisticated.",
-    vad: { activation_threshold: 0.5, min_speech_duration: 0.3, min_silence_duration: 0.8 },
+    vad: { activation_threshold: 0.5, min_speech_duration: 0.3, min_silence_duration: 0.4 },
     llm: { provider: 'openai', model: 'gpt-4o-mini' }
   },
   {
     name: "Technical Support",
     icon: "⚙️",
     prompt: "You are a technical support engineer. You are patient, analytical, and structured. Use step-by-step reasoning to resolve issues.",
-    vad: { activation_threshold: 0.5, min_speech_duration: 0.3, min_silence_duration: 0.8 },
+    vad: { activation_threshold: 0.5, min_speech_duration: 0.3, min_silence_duration: 0.4 },
     llm: { provider: 'groq', model: 'mixtral-8x7b-32768' }
   }
 ];
@@ -163,7 +163,7 @@ const CreateAgentPage = () => {
     stt: { provider: 'sarvam', model: 'saaras:v3', language: 'hi-IN' },
     llm: { provider: 'groq', model: 'llama-3.3-70b-versatile', temperature: 0.7 },
     tts: { provider: 'sarvam', model: 'bulbul:v3', voice: 'neha', pace: 1.0 },
-    vad: { activation_threshold: 0.5, min_speech_duration: 0.3, min_silence_duration: 0.8, padding_duration: 0.1 },
+    vad: { activation_threshold: 0.5, min_speech_duration: 0.3, min_silence_duration: 0.4, padding_duration: 0.1 },
     tools: []
   });
 

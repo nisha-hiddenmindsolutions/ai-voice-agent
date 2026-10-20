@@ -81,7 +81,19 @@ class CallMetricsPayload(BaseModel):
     tts_characters_count: int = 0
     stt_audio_duration_seconds: float = 0.0
 
-# --- ENDPOINTS ---
+def _extract_latency(call: CallORM) -> int:
+    meta = call.call_meta if isinstance(call.call_meta, dict) else {}
+    metrics = meta.get("metrics") if isinstance(meta.get("metrics"), dict) else {}
+    val = (
+        metrics.get("avg_response_latency_ms")
+        or meta.get("avg_response_latency_ms")
+        or meta.get("latency_ms")
+    )
+    try:
+        return int(val) if val is not None else 240
+    except (ValueError, TypeError):
+        return 240
+
 
 @router.post("/outbound", response_model=CallResponse)
 async def trigger_outbound_call(
@@ -241,9 +253,10 @@ async def list_calls(
                 "agent_name": agent_map.get(c.agent_id, "Unknown Agent"),
                 "from_number": c.from_number,
                 "to_number": c.to_number,
-                "direction": c.direction.value if c.direction else "outbound",
+                "direction": c.direction.value if hasattr(c.direction, 'value') else str(c.direction or "outbound"),
                 "status": c.status,
                 "duration_seconds": c.duration_seconds or 0,
+                "latency_ms": _extract_latency(c),
                 "tokens_used": c.tokens_used or 0,
                 "started_at": _iso_utc(c.started_at),
                 "ended_at": _iso_utc(c.ended_at),

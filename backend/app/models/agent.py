@@ -24,7 +24,7 @@ class TTSConfig(BaseModel):
 class VADConfig(BaseModel):
     activation_threshold: float = 0.5
     min_speech_duration: float = 0.3
-    min_silence_duration: float = 0.8
+    min_silence_duration: float = 0.4
     padding_duration: float = 0.1
 
 class ToolConfig(BaseModel):

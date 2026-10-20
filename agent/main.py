@@ -134,7 +134,7 @@ def prewarm(proc: JobProcess):
     from livekit.plugins import silero
     proc.userdata["vad"] = silero.VAD.load(
         min_speech_duration=0.3,
-        min_silence_duration=0.8,
+        min_silence_duration=0.4,
         activation_threshold=0.5,
     )
 

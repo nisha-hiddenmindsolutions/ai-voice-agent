@@ -44,15 +44,15 @@ async def google_authorize(current_user: UserORM = Depends(get_current_user)):
     client_id = settings.GOOGLE_CLIENT_ID
     if not client_id:
         raise HTTPException(
-            status_code=500,
-            detail="Google OAuth is not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables in your .env file."
+            status_code=400,
+            detail="Google OAuth is not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in your .env file, or use a Google Service Account key."
         )
         
     params = {
         "client_id": client_id,
         "redirect_uri": settings.GOOGLE_OAUTH_REDIRECT_URI,
         "response_type": "code",
-        "scope": "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/spreadsheets",
+        "scope": "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly",
         "access_type": "offline",
         "prompt": "consent",
         "state": current_user.id # Bind to current authenticated user
@@ -125,7 +125,12 @@ async def google_callback(
                 access_token=encrypted_access,
                 refresh_token=encrypted_refresh,
                 expires_at=expires_at,
-                scopes=["https://www.googleapis.com/auth/calendar.events", "https://www.googleapis.com/auth/spreadsheets"]
+                scopes=[
+                    "https://www.googleapis.com/auth/calendar.events",
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/gmail.send",
+                    "https://www.googleapis.com/auth/gmail.readonly"
+                ]
             )
             db.add(integration)
         
@@ -153,7 +158,12 @@ async def create_service_account_integration(
         provider=data.provider,
         integration_type="SERVICE_ACCOUNT",
         credentials=data.credentials, # Stored as JSONB
-        scopes=["https://www.googleapis.com/auth/calendar.events", "https://www.googleapis.com/auth/spreadsheets"],
+        scopes=[
+            "https://www.googleapis.com/auth/calendar.events",
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/gmail.readonly"
+        ],
         access_token="SERVICE_ACCOUNT_MANAGED" # Marker
     )
     
@@ -183,6 +193,9 @@ async def disconnect_integration(
     if not integration:
         raise HTTPException(status_code=404, detail="Integration not found")
         
+    from app.models.orm import ToolORM
+    from sqlalchemy import update
+    await db.execute(update(ToolORM).where(ToolORM.integration_id == integration_id).values(integration_id=None))
     await db.execute(delete(IntegrationORM).where(IntegrationORM.id == integration_id))
     await db.commit()
     return {"message": "Integration disconnected"}

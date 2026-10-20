@@ -69,18 +69,39 @@ class MissingAPIKeyError(RuntimeError):
     """Raised when a provider is selected but no BYOK key was supplied."""
 
 
+import os
+
 def _require_key(api_key: Optional[str], provider: str, kind: str) -> str:
     """
-    Ensures a provider API key was actually supplied via the config blob
-    (i.e. set by the user in the frontend UI). We deliberately never fall
-    back to process environment variables for these — BYOK only.
+    Ensures a provider API key is supplied via the config blob or environment variable
+    (allowing direct LiveKit Cloud Console / Playground testing).
     """
-    if not api_key or not api_key.strip():
-        raise MissingAPIKeyError(
-            f"No {kind.upper()} API key configured for provider '{provider}'. "
-            f"Add one in the frontend under Settings → API Keys."
-        )
-    return api_key.strip()
+    if api_key and api_key.strip():
+        return api_key.strip()
+
+    # Fallback to environment variables for direct LiveKit Console / Playground testing
+    env_var_map = {
+        "groq": "GROQ_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "cerebras": "CEREBRAS_API_KEY",
+        "sarvam": "SARVAM_API_KEY",
+        "elevenlabs": "ELEVENLABS_API_KEY",
+        "cartesia": "CARTESIA_API_KEY",
+        "deepgram": "DEEPGRAM_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
+        "gemini": "GOOGLE_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+    }
+    env_name = env_var_map.get(provider.lower(), f"{provider.upper()}_API_KEY")
+    env_val = os.getenv(env_name) or (os.getenv("GEMINI_API_KEY") if provider == "gemini" else None)
+    if env_val and env_val.strip():
+        logger.info(f"Using environment variable {env_name} for provider '{provider}'.")
+        return env_val.strip()
+
+    raise MissingAPIKeyError(
+        f"No {kind.upper()} API key configured for provider '{provider}'. "
+        f"Add one in the frontend under Settings → API Keys or set {env_name} in .env."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -152,10 +173,10 @@ def create_vad(config: Dict[str, Any], prewarmed_vad=None) -> agents_vad.VAD:
     """
     vad_cfg = config.get("vad", {})
     speech_dur  = vad_cfg.get("min_speech_duration",  0.3)
-    silence_dur = vad_cfg.get("min_silence_duration", 0.8)
+    silence_dur = vad_cfg.get("min_silence_duration", 0.4)
     threshold   = vad_cfg.get("activation_threshold", 0.5)
 
-    defaults = (speech_dur == 0.3 and silence_dur == 0.8 and threshold == 0.5)
+    defaults = (speech_dur == 0.3 and silence_dur in (0.4, 0.8) and threshold == 0.5)
     if prewarmed_vad and defaults:
         logger.info("VAD: using prewarmed instance.")
         return prewarmed_vad
@@ -294,9 +315,13 @@ def _build_llm(config: Dict[str, Any]) -> llm.LLM:
         )
     if provider == "groq":
         key = _require_key(api_key, "groq", "llm")
+        model_name = model or "openai/gpt-oss-120b"
+        if model_name in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3-8b-8192", "llama3-70b-8192"):
+            logger.info(f"[LLM] Groq model '{model_name}' decommissioned by Groq API; mapping to 'openai/gpt-oss-120b'.")
+            model_name = "openai/gpt-oss-120b"
         return groq.LLM(
             api_key=key,
-            model=model or "llama-3.3-70b-versatile",
+            model=model_name,
             temperature=temperature,
         )
 

@@ -18,6 +18,7 @@ from livekit.agents import llm
 
 from .google_calendar import build_calendar_tools
 from .google_sheets import build_sheets_tools
+from .gmail import build_gmail_tools
 from .rag import build_rag_tool
 from .webhook import build_webhook_tool
 
@@ -26,6 +27,7 @@ logger = logging.getLogger("agent-tools.registry")
 _DEFAULT_DESCRIPTIONS = {
     "CALENDAR": "Schedule meetings, appointments, or events on Google Calendar.",
     "SHEETS": "Log data, leads, or notes into a Google Sheets spreadsheet.",
+    "GMAIL": "Compose and send emails to callers or specified email addresses.",
 }
 
 # Tool types that expand into MULTIPLE named FunctionTools (return a list).
@@ -34,6 +36,7 @@ _DEFAULT_DESCRIPTIONS = {
 _MULTI_TOOL_BUILDERS = {
     "CALENDAR": build_calendar_tools,
     "SHEETS": build_sheets_tools,
+    "GMAIL": build_gmail_tools,
 }
 
 

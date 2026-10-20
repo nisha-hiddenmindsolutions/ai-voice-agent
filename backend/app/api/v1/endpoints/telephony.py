@@ -141,7 +141,7 @@ async def provision_sip_trunks(
                 SIPTrunkORM.status == "active",
             )
         )
-        if existing.scalar_one_or_none():
+        if existing.scalars().first():
             raise HTTPException(
                 status_code=409,
                 detail=(

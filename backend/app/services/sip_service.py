@@ -20,6 +20,12 @@ from app.core.livekit_auth import make_livekit_headers
 
 logger = logging.getLogger("sip_service")
 
+def normalize_e164(phone_number: str) -> str:
+    """Strip spaces and dashes from an E.164 phone number."""
+    if not phone_number:
+        return ""
+    return "".join(phone_number.split())
+
 _LK_BASE = settings.LIVEKIT_URL.replace("wss://", "https://").replace("ws://", "http://")
 
 class SIPService:

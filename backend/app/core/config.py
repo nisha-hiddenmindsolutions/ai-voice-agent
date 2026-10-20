@@ -8,15 +8,24 @@ _BACKEND_APP_DIR = Path(__file__).parent.parent
 _ROOT = _BACKEND_APP_DIR.parent.parent
 load_dotenv(_ROOT / ".env")
 
+def _clean_env(name: str, default: str = "") -> str:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    s = val.strip()
+    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+        s = s[1:-1].strip()
+    return s
+
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Voice AI SaaS"
     API_V1_STR: str = "/api/v1"
     
     # LiveKit
-    LIVEKIT_API_KEY: str = os.getenv("LIVEKIT_API_KEY") or os.getenv("LIVEKIT_APT_KEY", "")
-    LIVEKIT_API_SECRET: str = os.getenv("LIVEKIT_API_SECRET", "")
-    LIVEKIT_URL: str = os.getenv("LIVEKIT_URL", "")
-    LIVEKIT_SIP_DOMAIN: str = os.getenv("LIVEKIT_SIP_DOMAIN", "sip.livekit.cloud")
+    LIVEKIT_API_KEY: str = _clean_env("LIVEKIT_API_KEY") or _clean_env("LIVEKIT_APT_KEY")
+    LIVEKIT_API_SECRET: str = _clean_env("LIVEKIT_API_SECRET")
+    LIVEKIT_URL: str = _clean_env("LIVEKIT_URL")
+    LIVEKIT_SIP_DOMAIN: str = _clean_env("LIVEKIT_SIP_DOMAIN", "sip.livekit.cloud")
     
     # Storage
     DATA_DIR: Path = _ROOT / "data"
@@ -25,16 +34,16 @@ class Settings(BaseSettings):
     USAGE_FILE: Path = DATA_DIR / "usage.json"
     
     # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/Voice-Agent")
+    DATABASE_URL: str = _clean_env("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/Voice-Agent")
     
     # Security
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "") # HS256
-    ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY") or os.getenv("ENCRYPTTON_KEY", "") # Fernet (Base64)
+    SECRET_KEY: str = _clean_env("SECRET_KEY") # HS256
+    ENCRYPTION_KEY: str = _clean_env("ENCRYPTION_KEY") or _clean_env("ENCRYPTTON_KEY") # Fernet (Base64)
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7 # 1 week
     
     # Dynamic Domain Discovery (Local, Railway, or custom cloud)
-    _railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
-    _custom_backend = os.getenv("BACKEND_URL") or os.getenv("BACKEND_BASE_URL")
+    _railway_domain = _clean_env("RAILWAY_PUBLIC_DOMAIN")
+    _custom_backend = _clean_env("BACKEND_URL") or _clean_env("BACKEND_BASE_URL")
 
     if _custom_backend:
         _default_base = _custom_backend.rstrip("/")
@@ -47,15 +56,15 @@ class Settings(BaseSettings):
     _default_google_redirect = f"{_default_base}/api/v1/integrations/google/callback"
 
     # Backend base URL
-    BACKEND_BASE_URL: str = os.getenv("BACKEND_BASE_URL", _default_base)
+    BACKEND_BASE_URL: str = _clean_env("BACKEND_BASE_URL", _default_base)
 
     # Frontend URL (used for OAuth redirects)
-    FRONTEND_URL: str = os.getenv("FRONTEND_URL", _default_frontend)
+    FRONTEND_URL: str = _clean_env("FRONTEND_URL", _default_frontend)
 
     # Google OAuth
-    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
-    GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
-    GOOGLE_OAUTH_REDIRECT_URI: str = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", _default_google_redirect)
+    GOOGLE_CLIENT_ID: str = _clean_env("GOOGLE_CLIENT_ID")
+    GOOGLE_CLIENT_SECRET: str = _clean_env("GOOGLE_CLIENT_SECRET")
+    GOOGLE_OAUTH_REDIRECT_URI: str = _clean_env("GOOGLE_OAUTH_REDIRECT_URI", _default_google_redirect)
 
     class Config:
         case_sensitive = True

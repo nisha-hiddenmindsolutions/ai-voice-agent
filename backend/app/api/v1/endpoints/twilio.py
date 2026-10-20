@@ -463,27 +463,31 @@ async def _extract_spoken_email(text: str) -> Optional[str]:
     if not any(ind in lower for ind in email_indicators):
         return None
 
-    try:
         groq_key = os.getenv("GROQ_API_KEY", "")
-        prompt = (
-            "You are an expert at extracting email addresses from spoken phone call speech-to-text transcripts.\n"
-            "Speech-to-text often transcribes email addresses with phonetics or errors:\n"
-            "- 'at', 'added', 'at the', 'at the rate', 'a' instead of '@'\n"
-            "- 'dot', 'period', 'point' instead of '.'\n"
-            "- spaces between letters or words: 'N. I s h a' -> 'nisha', 'hidden mind solutions' -> 'hiddenmindsolutions'\n"
-            "- numbers: '08', '0 8', 'zero eight'\n"
-            "- common domains: 'gmail.com', 'yahoo.com', 'outlook.com', etc.\n\n"
-            f"Transcript: \"\"\"{text}\"\"\"\n\n"
-            "Extract the single intended email address mentioned by the caller. "
-            "Return ONLY the valid email address in lowercase, or NONE if no email address was mentioned. "
-            "Do not include quotes, markdown, or any other words."
-        )
+        openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+        if groq_key:
+            auth_header = f"Bearer {groq_key}"
+            target_url = "https://api.groq.com/openai/v1/chat/completions"
+            model_name = "qwen/qwen3.8-27b"
+            req_headers = {"Authorization": auth_header}
+        elif openrouter_key:
+            auth_header = f"Bearer {openrouter_key}"
+            target_url = "https://openrouter.ai/api/v1/chat/completions"
+            model_name = "meta-llama/llama-3.3-70b-instruct"
+            req_headers = {
+                "Authorization": auth_header,
+                "HTTP-Referer": "https://voice-agent.app",
+                "X-Title": "Voice Agent",
+            }
+        else:
+            return None
+
         client = _get_groq_client()
         resp = await client.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {groq_key}"},
+            target_url,
+            headers=req_headers,
             json={
-                "model": "qwen/qwen3.8-27b",
+                "model": model_name,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.0,
                 "max_tokens": 30
@@ -511,6 +515,25 @@ async def _generate_groq_llm_reply(
     t0 = time.perf_counter()
     try:
         groq_key = os.getenv("GROQ_API_KEY", "")
+        openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+        if groq_key:
+            auth_header = f"Bearer {groq_key}"
+            target_url = "https://api.groq.com/openai/v1/chat/completions"
+            model_name = "qwen/qwen3.8-27b"
+            req_headers = {"Authorization": auth_header}
+        elif openrouter_key:
+            auth_header = f"Bearer {openrouter_key}"
+            target_url = "https://openrouter.ai/api/v1/chat/completions"
+            model_name = "meta-llama/llama-3.3-70b-instruct"
+            req_headers = {
+                "Authorization": auth_header,
+                "HTTP-Referer": "https://voice-agent.app",
+                "X-Title": "Voice Agent",
+            }
+        else:
+            logger.warning("[Flow] Neither GROQ_API_KEY nor OPENROUTER_API_KEY is configured!")
+            return None, None
+
         email_ctx = f"\n- Captured caller email: {captured_email}" if captured_email else "\n- No caller email captured yet."
         system_content = (
             f"You are {agent_name}. {sys_prompt}\n"
@@ -530,14 +553,13 @@ async def _generate_groq_llm_reply(
         messages.append({"role": "user", "content": user_speech})
 
         payload = {
-            "model": "qwen/qwen3.8-27b",
+            "model": model_name,
             "messages": messages,
             "temperature": 0.4,
             "max_tokens": 100,
         }
-        headers = {"Authorization": f"Bearer {groq_key}"}
         client = _get_groq_client()
-        resp = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+        resp = await client.post(target_url, headers=req_headers, json=payload)
         latency_ms = int((time.perf_counter() - t0) * 1000)
         if resp.status_code == 200:
             data = resp.json()
@@ -545,9 +567,9 @@ async def _generate_groq_llm_reply(
             if res_text:
                 return res_text, latency_ms
         else:
-            logger.warning(f"[Flow] Groq API returned status {resp.status_code}: {resp.text}")
+            logger.warning(f"[Flow] LLM API returned status {resp.status_code}: {resp.text}")
     except Exception as e:
-        logger.warning(f"[Flow] Groq LLM live completion exception: {e}")
+        logger.warning(f"[Flow] LLM live completion exception: {e}")
     return None, None
 
 

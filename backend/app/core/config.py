@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     
     # LiveKit
-    LIVEKIT_API_KEY: str = os.getenv("LIVEKIT_API_KEY", "")
+    LIVEKIT_API_KEY: str = os.getenv("LIVEKIT_API_KEY") or os.getenv("LIVEKIT_APT_KEY", "")
     LIVEKIT_API_SECRET: str = os.getenv("LIVEKIT_API_SECRET", "")
     LIVEKIT_URL: str = os.getenv("LIVEKIT_URL", "")
     LIVEKIT_SIP_DOMAIN: str = os.getenv("LIVEKIT_SIP_DOMAIN", "sip.livekit.cloud")
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     
     # Security
     SECRET_KEY: str = os.getenv("SECRET_KEY", "") # HS256
-    ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "") # Fernet (Base64)
+    ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY") or os.getenv("ENCRYPTTON_KEY", "") # Fernet (Base64)
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7 # 1 week
     
     # Dynamic Domain Discovery (Local, Railway, or custom cloud)

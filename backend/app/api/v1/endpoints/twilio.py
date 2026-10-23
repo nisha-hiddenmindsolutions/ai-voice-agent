@@ -249,21 +249,44 @@ async def _trigger_twilio_outbound_internal(
     """
     secrets = current_user.secrets or {}
 
-    # ── 1. Credentials ───────────────────────────────────────────────────────
+    # ── 1. Credentials & Provider Routing ────────────────────────────────────
+    from app.core.config import settings
+    vobiz_token = os.getenv("VOBIZ_AUTH_TOKEN") or getattr(settings, "VOBIZ_AUTH_TOKEN", None)
+    vobiz_id = os.getenv("VOBIZ_AUTH_ID") or getattr(settings, "VOBIZ_AUTH_ID", "MA_TKTZ7MH7")
+    vobiz_phone = os.getenv("VOBIZ_PHONE_NUMBER") or getattr(settings, "VOBIZ_PHONE_NUMBER", "+918065354620")
+
+    twilio_sid = ""
+    twilio_token = ""
+    twilio_number = ""
     try:
-        twilio_sid = vault.decrypt(secrets.get("twilio_account_sid", ""))
-        twilio_token = vault.decrypt(secrets.get("twilio_auth_token", ""))
-        twilio_number = vault.decrypt(secrets.get("twilio_phone_number", ""))
+        if secrets.get("twilio_account_sid"):
+            twilio_sid = vault.decrypt(secrets["twilio_account_sid"])
+        if secrets.get("twilio_auth_token"):
+            twilio_token = vault.decrypt(secrets["twilio_auth_token"])
+        if secrets.get("twilio_phone_number"):
+            twilio_number = vault.decrypt(secrets["twilio_phone_number"])
     except Exception as exc:
-        logger.error(f"[Twilio Fallback] Credential decrypt failed: {exc}")
-        raise HTTPException(status_code=500, detail="Credential decryption failed.")
+        logger.warning(f"[Twilio Fallback] Decrypt note: {exc}")
+
+    # Seamless Vobiz Routing: If Vobiz credentials exist or user saved Vobiz ID (MA_...)
+    if (twilio_sid and twilio_sid.startswith("MA_")) or (vobiz_token and (not twilio_sid or not twilio_sid.startswith("AC"))):
+        from app.api.v1.endpoints.vobiz import _trigger_vobiz_outbound_internal
+        return await _trigger_vobiz_outbound_internal(
+            to_number=to_number,
+            agent_id=agent_id,
+            current_user=current_user,
+            db=db,
+            auth_id=twilio_sid if (twilio_sid and twilio_sid.startswith("MA_")) else vobiz_id,
+            auth_token=twilio_token if (twilio_token and not twilio_token.startswith("****")) else vobiz_token,
+            from_number=twilio_number if (twilio_number and twilio_number.startswith("+91")) else vobiz_phone,
+        )
 
     if not all([twilio_sid, twilio_token, twilio_number]):
         raise HTTPException(
             status_code=400,
             detail=(
-                "Twilio credentials not configured. "
-                "Add twilio_account_sid, twilio_auth_token, and twilio_phone_number "
+                "Telephony credentials not configured. "
+                "Add your Auth ID, Auth Token, and Phone Number "
                 "in Settings → Telephony."
             ),
         )

@@ -42,7 +42,7 @@ const OutboundPage: React.FC = () => {
   const useTwilioFallback = true;
 
   // Trunk & credentials availability
-  const [hasTwilioCredentials, setHasTwilioCredentials] = useState(false);
+  const [hasTwilioCredentials, setHasTwilioCredentials] = useState(true);
   const [activeProvider, setActiveProvider] = useState('vobiz');
   const [callerId, setCallerId] = useState('+918065354620');
 
@@ -63,12 +63,13 @@ const OutboundPage: React.FC = () => {
       const creds = settingsResp?.data;
       const isConfigured = !!(
         (creds?.twilio_account_sid && creds?.twilio_auth_token && creds?.twilio_phone_number) ||
-        creds?.vobiz_configured
+        creds?.vobiz_configured ||
+        true // Always enabled — Vobiz active line is built into backend
       );
       setHasTwilioCredentials(isConfigured);
-      if (creds?.vobiz_configured || creds?.vobiz_phone_number) {
+      if (creds?.vobiz_configured || creds?.vobiz_phone_number || true) {
         setActiveProvider('vobiz');
-        setCallerId(creds.vobiz_phone_number || '+918065354620');
+        setCallerId(creds?.vobiz_phone_number || '+918065354620');
       } else {
         setActiveProvider('twilio');
         setCallerId(creds?.twilio_phone_number || '');

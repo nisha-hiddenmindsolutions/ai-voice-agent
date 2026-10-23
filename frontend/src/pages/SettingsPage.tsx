@@ -203,27 +203,36 @@ const SettingsPage = () => {
                 </div>
               </div>
 
-              {/* Twilio Credentials */}
+              {/* Telephony Provider Credentials */}
               <div className="card p-6">
-                <h2 className="text-sm font-semibold flex items-center gap-2 mb-4" style={{ color: 'var(--text-primary)' }}>
-                  <Key size={15} style={{ color: 'var(--warning)' }} />
-                  Twilio Credentials
-                </h2>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
+                    <Key size={15} style={{ color: 'var(--warning)' }} />
+                    Telephony Provider Credentials (Vobiz / Twilio)
+                  </h2>
+                  <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                    🟢 Active: Vobiz India Line (+91 8065354620)
+                  </span>
+                </div>
+
+                <p className="text-[11px] text-[var(--text-muted)] mb-4">
+                  Enter your Vobiz credentials (Auth ID, Auth Token, and Phone Number) or Twilio credentials to power real voice calls.
+                </p>
 
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <InputField
-                      label="Account SID"
+                      label="Account SID / Auth ID"
                       value={telephony.twilio_account_sid}
                       onChange={(v: string) => setTelephony({ ...telephony, twilio_account_sid: v })}
-                      placeholder="ACXXXXXXXX"
+                      placeholder="MA_TKTZ7MH7 or AC..."
                       icon={<Hash size={13} />}
                     />
                     <InputField
-                      label="Phone Number"
+                      label="Caller ID Phone Number"
                       value={telephony.twilio_phone_number}
                       onChange={(v: string) => setTelephony({ ...telephony, twilio_phone_number: v })}
-                      placeholder="+1234567890"
+                      placeholder="+918065354620"
                       icon={<Phone size={13} />}
                       mono
                     />
@@ -232,7 +241,7 @@ const SettingsPage = () => {
                     label="Auth Token"
                     value={telephony.twilio_auth_token}
                     onChange={(v: string) => setTelephony({ ...telephony, twilio_auth_token: v })}
-                    placeholder="Secure token"
+                    placeholder="Vobiz or Twilio Auth Token"
                     icon={<Shield size={13} />}
                     type="password"
                   />

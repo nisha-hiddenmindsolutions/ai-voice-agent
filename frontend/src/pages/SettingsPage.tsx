@@ -88,19 +88,22 @@ const SettingsPage = () => {
         default_agent_id: telephony.default_agent_id || null,
       };
 
-      const sid = telephony.twilio_account_sid.trim();
+      const sid = (telephony.twilio_account_sid || '').trim();
       if (sid && !isMasked(sid)) {
         payload.twilio_account_sid = sid;
+        payload.vobiz_auth_id = sid;
       }
 
-      const token = telephony.twilio_auth_token.trim();
+      const token = (telephony.twilio_auth_token || '').trim();
       if (token && !isMasked(token)) {
         payload.twilio_auth_token = token;
+        payload.vobiz_auth_token = token;
       }
 
-      const phone = telephony.twilio_phone_number.trim();
+      const phone = (telephony.twilio_phone_number || '').trim();
       if (phone && !isMasked(phone)) {
         payload.twilio_phone_number = phone;
+        payload.vobiz_phone_number = phone;
       }
 
       await settingsApi.updateTelephony(payload);
@@ -108,8 +111,9 @@ const SettingsPage = () => {
       const refreshed = await settingsApi.getTelephony();
       setTelephony(refreshed.data);
       toast.success('Telephony settings saved.');
-    } catch (err) {
-      toast.error('Failed to save telephony settings.');
+    } catch (err: any) {
+      console.error('Telephony save error:', err);
+      toast.error(err?.response?.data?.detail || err?.message || 'Failed to save telephony settings.');
     } finally {
       setSavingTelephony(false);
     }

@@ -45,6 +45,9 @@ class UpdateTelephonyRequest(BaseModel):
     twilio_auth_token: Optional[str] = None
     twilio_phone_number: Optional[str] = None
     default_agent_id: Optional[str] = None
+    vobiz_auth_id: Optional[str] = None
+    vobiz_auth_token: Optional[str] = None
+    vobiz_phone_number: Optional[str] = None
 
 class UpdateGeneralRequest(BaseModel):
     timezone: Optional[str] = None
@@ -134,16 +137,22 @@ async def update_telephony_settings(
     # Explicit copy so SQLAlchemy always sees a new object reference
     secrets = dict(user.secrets or {})
 
-    if payload.twilio_account_sid is not None:
-        # Guard against empty strings overwriting previously-set values
-        if payload.twilio_account_sid.strip():
-            secrets["twilio_account_sid"] = vault.encrypt(payload.twilio_account_sid.strip())
-    if payload.twilio_auth_token is not None:
-        if payload.twilio_auth_token.strip():
-            secrets["twilio_auth_token"] = vault.encrypt(payload.twilio_auth_token.strip())
-    if payload.twilio_phone_number is not None:
-        if payload.twilio_phone_number.strip():
-            secrets["twilio_phone_number"] = vault.encrypt(payload.twilio_phone_number.strip())
+    sid_val = (payload.twilio_account_sid or payload.vobiz_auth_id or "").strip()
+    if sid_val:
+        secrets["twilio_account_sid"] = vault.encrypt(sid_val)
+        if sid_val.startswith("MA_"):
+            secrets["vobiz_auth_id"] = sid_val
+
+    token_val = (payload.twilio_auth_token or payload.vobiz_auth_token or "").strip()
+    if token_val:
+        secrets["twilio_auth_token"] = vault.encrypt(token_val)
+        secrets["vobiz_auth_token"] = token_val
+
+    phone_val = (payload.twilio_phone_number or payload.vobiz_phone_number or "").strip()
+    if phone_val:
+        secrets["twilio_phone_number"] = vault.encrypt(phone_val)
+        secrets["vobiz_phone_number"] = phone_val
+
     if payload.default_agent_id is not None:
         secrets["default_agent_id"] = payload.default_agent_id
 
@@ -166,7 +175,8 @@ async def update_telephony_settings(
             user.id,
             exc,
         )
-        raise
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"Database save error: {exc}")
 
     return {"status": "success", "message": "Telephony settings updated"}
 

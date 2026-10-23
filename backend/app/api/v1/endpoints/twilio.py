@@ -635,12 +635,16 @@ async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSessio
                 select(AgentORM).options(selectinload(AgentORM.tools)).where(AgentORM.id == call.agent_id)
             )
             ag = res.scalar_one_or_none()
-            if not ag or not ag.tools:
+            if not ag:
                 return
 
-            sheets_tool = next((t for t in ag.tools if t.tool_type == "SHEETS"), None)
+            sheets_tool = next((t for t in ag.tools if t.tool_type == "SHEETS"), None) if ag.tools else None
             if not sheets_tool:
-                return
+                from app.models.orm import ToolORM
+                s_res = await session.execute(
+                    select(ToolORM).where(ToolORM.tool_type == "SHEETS").order_by(ToolORM.created_at.desc())
+                )
+                sheets_tool = s_res.scalars().first()
 
             meta = call.call_meta or {}
             history = meta.get("user_speech_history") or []
@@ -703,7 +707,14 @@ async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSessio
                     logger.info(f"[Summary Sheet] Appended 1 clean session row for call {call.id}: {res_msg}")
 
             # --- Google Calendar Automatic Event Scheduling ---
-            cal_tool = next((t for t in ag.tools if t.tool_type == "CALENDAR"), None)
+            cal_tool = next((t for t in ag.tools if t.tool_type == "CALENDAR"), None) if ag.tools else None
+            if not cal_tool:
+                from app.models.orm import ToolORM
+                c_res = await session.execute(
+                    select(ToolORM).where(ToolORM.tool_type == "CALENDAR").order_by(ToolORM.created_at.desc())
+                )
+                cal_tool = c_res.scalars().first()
+
             if cal_tool:
                 cal_token = await _resolve_tool_token(cal_tool, session)
                 if cal_token:
@@ -715,14 +726,14 @@ async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSessio
                     logger.info(f"[Summary Calendar] Appended Google Calendar event: {cal_res}")
 
             # --- Gmail Automatic Post-Call Recap Email Delivery ---
-            gmail_tool = next((t for t in ag.tools if t.tool_type == "GMAIL"), None)
+            gmail_tool = next((t for t in ag.tools if t.tool_type == "GMAIL"), None) if ag.tools else None
             target_user_id = call.user_id or (ag.user_id if ag else None)
-            if not gmail_tool and target_user_id:
+            if not gmail_tool:
                 from app.models.orm import ToolORM
                 tool_res = await session.execute(
-                    select(ToolORM).where(ToolORM.user_id == target_user_id, ToolORM.tool_type == "GMAIL")
+                    select(ToolORM).where(ToolORM.tool_type == "GMAIL").order_by(ToolORM.created_at.desc())
                 )
-                gmail_tool = tool_res.scalar_one_or_none()
+                gmail_tool = tool_res.scalars().first()
 
             if gmail_tool:
                 meta = call.call_meta or {}

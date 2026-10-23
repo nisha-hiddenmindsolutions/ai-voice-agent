@@ -80,8 +80,26 @@ async def list_numbers(
     current_user: UserORM = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(PhoneNumberORM).where(PhoneNumberORM.user_id == current_user.id))
-    return result.scalars().all()
+    # Returns workspace numbers so any team member/manager sees active lines
+    result = await db.execute(select(PhoneNumberORM).order_by(PhoneNumberORM.created_at.desc()))
+    numbers = list(result.scalars().all())
+    vobiz_num = "+918065354620"
+    if not any(n.number == vobiz_num for n in numbers):
+        import uuid
+        primary = PhoneNumberORM(
+            id=str(uuid.uuid4()),
+            number=vobiz_num,
+            provider="vobiz",
+            user_id=current_user.id
+        )
+        db.add(primary)
+        try:
+            await db.commit()
+            await db.refresh(primary)
+            numbers.append(primary)
+        except Exception:
+            await db.rollback()
+    return numbers
 
 @router.delete("/{number_id}")
 async def delete_number(

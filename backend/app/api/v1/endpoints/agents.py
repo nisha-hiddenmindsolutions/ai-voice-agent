@@ -100,11 +100,11 @@ async def create_or_update_agent(
     # Extract tool IDs (which are strings) from agent.tools
     tool_ids = [t for t in agent.tools if isinstance(t, str)]
     
-    # Query ToolORM objects from database
+    # Query ToolORM objects from database (supports workspace shared tools)
     db_tools = []
     if tool_ids:
         from app.models.orm import ToolORM
-        tool_stmt = select(ToolORM).where(ToolORM.id.in_(tool_ids), ToolORM.user_id == current_user.id)
+        tool_stmt = select(ToolORM).where(ToolORM.id.in_(tool_ids))
         tool_result = await db.execute(tool_stmt)
         db_tools = list(tool_result.scalars().all())
         

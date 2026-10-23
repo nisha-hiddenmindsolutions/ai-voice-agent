@@ -60,11 +60,13 @@ async def create_tool(
         tool_config = dict(tool.config) if tool.config else {}
         
         if tool.tool_type in ("SHEETS", "CALENDAR", "GMAIL") and not resolved_integration_id:
-            # Auto-find the user's Google integration
+            # Auto-find the user's Google integration, with fallback to any workspace Google integration
             int_stmt = select(IntegrationORM).where(
-                IntegrationORM.user_id == current_user.id,
                 IntegrationORM.provider == "google"
-            ).order_by(IntegrationORM.updated_at.desc())
+            ).order_by(
+                (IntegrationORM.user_id == current_user.id).desc(),
+                IntegrationORM.updated_at.desc()
+            )
             int_result = await db.execute(int_stmt)
             google_int = int_result.scalars().first()
             if google_int:
@@ -117,7 +119,8 @@ async def list_tools(
     current_user: UserORM = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(ToolORM).where(ToolORM.user_id == current_user.id))
+    # Workspace-shared tool visibility so any team member/manager can view and bind tools
+    result = await db.execute(select(ToolORM).order_by(ToolORM.created_at.desc()))
     return result.scalars().all()
 
 @router.delete("/{tool_id}")

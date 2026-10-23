@@ -141,20 +141,26 @@ async def _resolve_tool_token(tool, db: AsyncSession) -> str | None:
     For raw webhook tools:
       - Decrypt the stored api_key field
     """
-    if not tool.integration_id:
+    integration = None
+    if tool.integration_id:
+        int_result = await db.execute(
+            select(IntegrationORM).where(IntegrationORM.id == tool.integration_id)
+        )
+        integration = int_result.scalar_one_or_none()
+
+    # Workspace fallback for Google tools
+    if not integration and getattr(tool, "tool_type", "") in ("SHEETS", "CALENDAR", "GMAIL"):
+        fallback_res = await db.execute(
+            select(IntegrationORM).where(IntegrationORM.provider == "google").order_by(IntegrationORM.updated_at.desc())
+        )
+        integration = fallback_res.scalars().first()
+
+    if not integration:
         if tool.api_key:
             try:
                 return vault.decrypt(tool.api_key)
             except Exception:
                 return None
-        return None
-
-    # Load the integration
-    int_result = await db.execute(
-        select(IntegrationORM).where(IntegrationORM.id == tool.integration_id)
-    )
-    integration = int_result.scalar_one_or_none()
-    if not integration:
         return None
 
     if integration.integration_type == "SERVICE_ACCOUNT" and integration.credentials:

@@ -658,6 +658,8 @@ async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSessio
             lower_speech = full_user_speech.lower()
             if any(w in lower_speech for w in ["property", "flat", "apartment", "bhk", "villa", "real estate", "site visit"]):
                 specialty = "Real Estate Site Visit"
+            elif any(w in lower_speech for w in ["order", "product", "delivery", "shipping", "refund", "return", "cart", "ecommerce", "e-commerce", "exchange", "tracking", "item", "purchase"]):
+                specialty = "E-Commerce Order & Customer Support"
             elif any(w in lower_speech for w in ["demo", "software", "saas", "tech", "platform", "cloud"]):
                 specialty = "Product Demo & Tech Discussion"
             elif any(w in lower_speech for w in ["car", "drive", "test drive", "vehicle", "automobile"]):

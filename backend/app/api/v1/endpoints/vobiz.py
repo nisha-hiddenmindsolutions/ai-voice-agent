@@ -6,9 +6,14 @@ Vobiz uses VobizXML:
   - <Gather action="..." method="POST" inputType="speech" executionTimeout="8">...</Gather>
   - <Hangup/>
 
-When a caller dials a Vobiz phone number (e.g. +918065354620):
-  1. Vobiz sends an HTTP POST/GET to the Answer URL (/flow or /inbound).
-  2. Our backend creates or finds the call session, resolves the agent (Maya / Healthcare Receptionist),
+Outbound Call API:
+  - POST https://api.vobiz.ai/api/v1/Account/{auth_id}/Call/
+  - Headers: X-Auth-ID, X-Auth-Token, Content-Type: application/json
+  - Body: {"from": "+918065354620", "to": "+91...", "answer_url": "...", "answer_method": "POST"}
+
+When a caller answers an outbound call or dials in:
+  1. Vobiz sends an HTTP POST/GET to the Answer URL (/flow).
+  2. Our backend resolves the agent (Maya / Healthcare Receptionist),
      and returns VobizXML greeting with <Gather inputType="speech">.
   3. When the caller speaks, Vobiz sends POST to the action URL (/flow) with `Speech`.
   4. Groq / OpenRouter generates an ultra-fast dynamic LLM response (~150ms).
@@ -24,7 +29,9 @@ import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Request, Response, BackgroundTasks
+import httpx
+from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Request, Response, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -40,6 +47,14 @@ from app.api.v1.endpoints.twilio import (
 
 logger = logging.getLogger("vobiz")
 router = APIRouter()
+
+
+class VobizOutboundRequest(BaseModel):
+    to_number: str
+    from_number: Optional[str] = None
+    agent_id: Optional[str] = None
+    vobiz_auth_id: Optional[str] = None
+    vobiz_auth_token: Optional[str] = None
 
 
 async def _resolve_agent_for_number(dialed_number: str, db: AsyncSession) -> Optional[AgentORM]:
@@ -72,7 +87,7 @@ async def _resolve_agent_for_number(dialed_number: str, db: AsyncSession) -> Opt
     )
     maya = maya_res.scalar_one_or_none()
     if maya:
-        logger.info(f"[Vobiz] Dialed number {dialed_number} mapped to Maya by fallback")
+        logger.info(f"[Vobiz] Number {dialed_number} mapped to Maya by fallback")
         return maya
 
     # Fallback 2: Any active agent
@@ -81,11 +96,168 @@ async def _resolve_agent_for_number(dialed_number: str, db: AsyncSession) -> Opt
     )
     latest_agent = latest_res.scalar_one_or_none()
     if latest_agent:
-        logger.info(f"[Vobiz] Dialed number {dialed_number} mapped to latest agent: {latest_agent.agent_name}")
+        logger.info(f"[Vobiz] Number {dialed_number} mapped to latest agent: {latest_agent.agent_name}")
         return latest_agent
 
     return None
 
+
+# ─── OUTBOUND CALL TRIGGER ───────────────────────────────────────────────────
+
+async def _trigger_vobiz_outbound_internal(
+    *,
+    to_number: str,
+    agent_id: Optional[str] = None,
+    current_user: Optional[UserORM] = None,
+    db: AsyncSession,
+    from_number: Optional[str] = None,
+    auth_id: Optional[str] = None,
+    auth_token: Optional[str] = None,
+) -> dict:
+    """
+    Triggers an outbound call using Vobiz REST API.
+    
+    1. Resolves Vobiz Auth ID and Auth Token.
+    2. Resolves Agent (Maya / Healthcare Receptionist).
+    3. Creates CallORM record in Postgres.
+    4. Calls Vobiz REST API: POST https://api.vobiz.ai/api/v1/Account/{auth_id}/Call/
+    5. Returns call details.
+    """
+    auth_id = (
+        auth_id
+        or os.getenv("VOBIZ_AUTH_ID")
+        or (current_user.secrets.get("vobiz_auth_id") if current_user and current_user.secrets else None)
+        or "MA_TKTZ7MH7"
+    )
+    auth_token = (
+        auth_token
+        or os.getenv("VOBIZ_AUTH_TOKEN")
+        or (current_user.secrets.get("vobiz_auth_token") if current_user and current_user.secrets else None)
+    )
+
+    if not auth_token:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Vobiz Auth Token not configured. Please provide vobiz_auth_token in request "
+                "or set VOBIZ_AUTH_TOKEN in environment variables."
+            ),
+        )
+
+    # Clean numbers
+    to_number = "".join(to_number.split())
+    if not to_number.startswith("+"):
+        to_number = "+" + to_number
+
+    from_number = (from_number or os.getenv("VOBIZ_PHONE_NUMBER") or "+918065354620").strip()
+    if not from_number.startswith("+"):
+        from_number = "+" + from_number
+
+    # Resolve agent
+    agent = None
+    if agent_id:
+        ag_res = await db.execute(
+            select(AgentORM).options(selectinload(AgentORM.tools)).where(AgentORM.id == agent_id)
+        )
+        agent = ag_res.scalar_one_or_none()
+
+    if not agent:
+        agent = await _resolve_agent_for_number(from_number, db)
+
+    room_name = f"vobiz_outbound_{uuid.uuid4().hex[:8]}"
+    db_call = CallORM(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id if current_user else (agent.user_id if agent else None),
+        agent_id=agent.id if agent else None,
+        session_id=room_name,
+        from_number=from_number,
+        to_number=to_number,
+        direction=CallDirection.OUTBOUND,
+        status="connecting",
+        call_meta={
+            "provider": "vobiz",
+            "conversation_history": [],
+            "user_speech_history": [],
+        },
+    )
+    db.add(db_call)
+    await db.commit()
+    await db.refresh(db_call)
+
+    # Base URL for Webhooks
+    base_url = os.getenv("BACKEND_URL", "https://ai-voice-agent-production-3d0d.up.railway.app").rstrip("/")
+    answer_url = f"{base_url}/api/v1/telephony/vobiz/flow?call_id={db_call.id}"
+    hangup_url = f"{base_url}/api/v1/telephony/vobiz/status-callback"
+
+    vobiz_url = f"https://api.vobiz.ai/api/v1/Account/{auth_id}/Call/"
+    headers = {
+        "X-Auth-ID": auth_id,
+        "X-Auth-Token": auth_token,
+        "Content-Type": "application/json",
+    }
+    vobiz_payload = {
+        "from": from_number,
+        "to": to_number,
+        "answer_url": answer_url,
+        "answer_method": "POST",
+        "hangup_url": hangup_url,
+        "hangup_method": "POST",
+    }
+
+    logger.info(f"[Vobiz Outbound] Dispatching call from {from_number} to {to_number} via Vobiz API: {vobiz_url}")
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(vobiz_url, headers=headers, json=vobiz_payload)
+
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            req_uuid = data.get("request_uuid") or data.get("api_id")
+            if req_uuid:
+                db_call.session_id = req_uuid
+            db_call.status = "in-progress"
+            await db.commit()
+            logger.info(f"[Vobiz Outbound] Call initiated successfully: request_uuid={req_uuid}")
+            return {
+                "status": "calling",
+                "call_id": db_call.id,
+                "request_uuid": req_uuid,
+                "from": from_number,
+                "to": to_number,
+                "agent_name": agent.agent_name if agent else "Maya",
+                "message": f"Calling {to_number} from Maya ({from_number})...",
+            }
+        else:
+            logger.error(f"[Vobiz Outbound] Error from Vobiz API: {resp.status_code} - {resp.text}")
+            db_call.status = "failed"
+            await db.commit()
+            raise HTTPException(
+                status_code=resp.status_code,
+                detail=f"Vobiz API error ({resp.status_code}): {resp.text}",
+            )
+    except httpx.RequestError as exc:
+        logger.error(f"[Vobiz Outbound] Network error connecting to Vobiz: {exc}")
+        db_call.status = "failed"
+        await db.commit()
+        raise HTTPException(status_code=502, detail=f"Failed to connect to Vobiz: {exc}")
+
+
+@router.post("/outbound")
+async def trigger_vobiz_outbound(
+    payload: VobizOutboundRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Direct API endpoint to trigger an outbound phone call using Vobiz."""
+    return await _trigger_vobiz_outbound_internal(
+        to_number=payload.to_number,
+        agent_id=payload.agent_id,
+        db=db,
+        from_number=payload.from_number,
+        auth_id=payload.vobiz_auth_id,
+        auth_token=payload.vobiz_auth_token,
+    )
+
+
+# ─── INBOUND / FLOW WEBHOOK ──────────────────────────────────────────────────
 
 @router.post("/flow")
 @router.get("/flow")
@@ -169,7 +341,7 @@ async def vobiz_flow_webhook(
     if not agent:
         agent = await _resolve_agent_for_number(to_num, db)
 
-    # 4. Create Call record if initial inbound call
+    # 4. Create Call record if not found
     if not call_rec:
         call_rec = CallORM(
             id=str(uuid.uuid4()),
@@ -197,7 +369,7 @@ async def vobiz_flow_webhook(
     if agent and agent.config and isinstance(agent.config, dict):
         first_msg = agent.config.get("first_message", "").strip()
 
-    # Determine Base URL for action webhook
+    # Base URL for action webhook
     base_url = os.getenv("BACKEND_URL", "").rstrip("/")
     if not base_url:
         base_url = str(request.base_url).rstrip("/")
@@ -311,6 +483,8 @@ async def vobiz_flow_webhook(
 </Response>"""
     return Response(content=vobiz_xml, media_type="text/xml")
 
+
+# ─── STATUS CALLBACK ─────────────────────────────────────────────────────────
 
 @router.post("/status-callback")
 @router.get("/status-callback")

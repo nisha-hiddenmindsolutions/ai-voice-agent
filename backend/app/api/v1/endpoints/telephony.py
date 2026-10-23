@@ -441,15 +441,34 @@ async def trigger_outbound_call(
     # ── 1. Rate limit ────────────────────────────────────────────────────────
     async with call_rate_limiter.acquire(current_user.id):
 
-        # ── 2. Redirect to Twilio fallback if requested ───────────────────────
+        # ── 2. Redirect to Twilio / Vobiz fallback if requested ───────────────────────
         if payload.use_twilio_fallback:
+            if os.getenv("VOBIZ_AUTH_TOKEN"):
+                from app.api.v1.endpoints.vobiz import _trigger_vobiz_outbound_internal
+                return await _trigger_vobiz_outbound_internal(
+                    to_number=payload.to_number,
+                    agent_id=payload.agent_id,
+                    current_user=current_user,
+                    db=db,
+                )
             from app.api.v1.endpoints.twilio import _trigger_twilio_outbound_internal
-            return await _trigger_twilio_outbound_internal(
-                to_number=payload.to_number,
-                agent_id=payload.agent_id,
-                current_user=current_user,
-                db=db,
-            )
+            try:
+                return await _trigger_twilio_outbound_internal(
+                    to_number=payload.to_number,
+                    agent_id=payload.agent_id,
+                    current_user=current_user,
+                    db=db,
+                )
+            except Exception as tw_err:
+                if os.getenv("VOBIZ_AUTH_TOKEN") or os.getenv("VOBIZ_AUTH_ID"):
+                    from app.api.v1.endpoints.vobiz import _trigger_vobiz_outbound_internal
+                    return await _trigger_vobiz_outbound_internal(
+                        to_number=payload.to_number,
+                        agent_id=payload.agent_id,
+                        current_user=current_user,
+                        db=db,
+                    )
+                raise
 
         # ── 3. Find outbound trunk ────────────────────────────────────────────
         trunk_result = await db.execute(

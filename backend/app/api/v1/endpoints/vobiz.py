@@ -223,8 +223,8 @@ async def _trigger_vobiz_outbound_internal(
                 "request_uuid": req_uuid,
                 "from": from_number,
                 "to": to_number,
-                "agent_name": agent.agent_name if agent else "Maya",
-                "message": f"Calling {to_number} from Maya ({from_number})...",
+                "agent_name": agent.agent_name if agent else "Voice Assistant",
+                "message": f"Calling {to_number} from {agent.agent_name if agent else 'Voice Assistant'} ({from_number})...",
             }
         else:
             logger.error(f"[Vobiz Outbound] Error from Vobiz API: {resp.status_code} - {resp.text}")
@@ -363,8 +363,8 @@ async def vobiz_flow_webhook(
         await db.refresh(call_rec)
 
     # Resolve agent metadata
-    agent_name = (agent.agent_name if agent else None) or "Maya"
-    sys_prompt = (agent.prompt if agent else "") or "You are Maya, an empathetic, professional medical receptionist for Apollo Healthcare."
+    agent_name = (agent.agent_name if agent else None) or "Voice Assistant"
+    sys_prompt = (agent.prompt if agent else "") or f"You are {agent_name}, a friendly, professional voice assistant."
     first_msg = ""
     if agent and agent.config and isinstance(agent.config, dict):
         first_msg = agent.config.get("first_message", "").strip()
@@ -382,7 +382,7 @@ async def vobiz_flow_webhook(
         if first_msg:
             intro_msg = first_msg
         else:
-            intro_msg = f"Hello! This is {agent_name} from Apollo Healthcare. How can I assist you with your appointment today?"
+            intro_msg = f"Hello! This is {agent_name}. How can I assist you today?"
 
         vobiz_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -392,7 +392,7 @@ async def vobiz_flow_webhook(
     <Gather action="{action_url}" method="POST" inputType="speech" executionTimeout="8">
         <Speak voice="Polly.Aditi" language="en-IN">I am still here to assist you. Please let me know how I can help.</Speak>
     </Gather>
-    <Speak voice="Polly.Aditi" language="en-IN">Thank you for calling Apollo Healthcare. Have a wonderful day. Goodbye!</Speak>
+    <Speak voice="Polly.Aditi" language="en-IN">Thank you for speaking with {agent_name}. Have a wonderful day. Goodbye!</Speak>
 </Response>"""
         logger.info(f"[Vobiz] Turn 1 greeting served for call {call_rec.id} ({agent_name})")
         return Response(content=vobiz_xml, media_type="text/xml")
@@ -436,8 +436,8 @@ async def vobiz_flow_webhook(
         background_tasks.add_task(_append_call_summary_to_sheets, call_rec, db)
 
         closing_msg = (
-            f"You are very welcome! Your appointment details have been confirmed and recorded. "
-            f"Thank you for calling Apollo Healthcare. Take care and goodbye!"
+            f"You are very welcome! Your details have been confirmed and recorded. "
+            f"Thank you for speaking with {agent_name}. Take care and goodbye!"
         )
         vobiz_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -479,7 +479,7 @@ async def vobiz_flow_webhook(
     <Gather action="{action_url}" method="POST" inputType="speech" executionTimeout="8">
         <Speak voice="Polly.Aditi" language="en-IN">Is there anything else I can assist you with today?</Speak>
     </Gather>
-    <Speak voice="Polly.Aditi" language="en-IN">Thank you for calling Apollo Healthcare. Goodbye!</Speak>
+    <Speak voice="Polly.Aditi" language="en-IN">Thank you for speaking with {agent_name}. Goodbye!</Speak>
 </Response>"""
     return Response(content=vobiz_xml, media_type="text/xml")
 

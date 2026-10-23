@@ -651,23 +651,25 @@ async def _append_call_summary_to_sheets(call: CallORM, db: AsyncSession):
         name_match = re.search(r'(?:my full name is|full name is|my name is|name is|i am|this is)\s+([a-zA-Z\s]+?)(?:\s+and|\s+i|\s+my|\.|$)', full_user_speech, re.IGNORECASE)
         cust_name = name_match.group(1).strip().title() if name_match else "Caller"
 
-        # Parse Medical Concern / Specialty
-        specialty = "General Consultation"
+        # Parse Service / Inquiry Topic
+        specialty = f"{ag.agent_name} Consultation"
         lower_speech = full_user_speech.lower()
-        if "dent" in lower_speech or "teeth" in lower_speech or "tooth" in lower_speech:
-            specialty = "Dental Care (Dr. Patel)"
-        elif "gynec" in lower_speech or "women" in lower_speech:
-            specialty = "Gynecology (Dr. Ananya)"
-        elif "pediat" in lower_speech or "child" in lower_speech or "kid" in lower_speech:
-            specialty = "Pediatrics (Dr. Mehta)"
-        elif "cardiol" in lower_speech or "heart" in lower_speech:
+        if any(w in lower_speech for w in ["property", "flat", "apartment", "bhk", "villa", "real estate", "site visit"]):
+            specialty = "Real Estate Site Visit"
+        elif any(w in lower_speech for w in ["demo", "software", "saas", "tech", "platform", "cloud"]):
+            specialty = "Product Demo & Tech Discussion"
+        elif any(w in lower_speech for w in ["car", "drive", "test drive", "vehicle", "automobile"]):
+            specialty = "Test Drive Booking"
+        elif any(w in lower_speech for w in ["dent", "teeth", "tooth"]):
+            specialty = "Dental Care"
+        elif any(w in lower_speech for w in ["cardiol", "heart"]):
             specialty = "Cardiology"
-        elif "diabet" in lower_speech:
-            specialty = "Diabetes / Endocrinology"
-        elif "neuro" in lower_speech:
-            specialty = "Neurology"
-        elif "general" in lower_speech or "fever" in lower_speech or "checkup" in lower_speech or "routine" in lower_speech:
-            specialty = "General Medicine (Dr. Sharma)"
+        elif any(w in lower_speech for w in ["legal", "lawyer", "law"]):
+            specialty = "Legal Consultation"
+        elif any(w in lower_speech for w in ["finance", "tax", "loan", "investment"]):
+            specialty = "Financial Advisory"
+        elif any(w in lower_speech for w in ["general", "consult", "meeting", "checkup"]):
+            specialty = "Client Consultation"
 
         # Parse Slot / Date requested
         slot_match = re.search(r'(?:appointment|slot|time|on|at)\s+([a-zA-Z0-9\s\:\.]+(?:morning|afternoon|pm|am|october|september|tomorrow|today)?)', full_user_speech, re.IGNORECASE)

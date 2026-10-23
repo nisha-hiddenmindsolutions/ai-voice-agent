@@ -626,138 +626,143 @@ async def _check_and_execute_linked_tools(agent_id: str, speech_result: str, cal
         logger.warning(f"[Flow Tools] Error accumulating speech: {exc}")
 
 
-async def _append_call_summary_to_sheets(call: CallORM, db: AsyncSession):
+async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSession] = None):
     """Appends EXACTLY 1 clean summary lead row per call session upon call completion."""
-    try:
-        res = await db.execute(
-            select(AgentORM).options(selectinload(AgentORM.tools)).where(AgentORM.id == call.agent_id)
-        )
-        ag = res.scalar_one_or_none()
-        if not ag or not ag.tools:
-            return
-
-        sheets_tool = next((t for t in ag.tools if t.tool_type == "SHEETS"), None)
-        if not sheets_tool:
-            return
-
-        meta = call.call_meta or {}
-        history = meta.get("user_speech_history") or []
-        full_user_speech = " ".join(history)
-        if not full_user_speech:
-            return
-
-        # Parse Patient Name
-        import re
-        name_match = re.search(r'(?:my full name is|full name is|my name is|name is|i am|this is)\s+([a-zA-Z\s]+?)(?:\s+and|\s+i|\s+my|\.|$)', full_user_speech, re.IGNORECASE)
-        cust_name = name_match.group(1).strip().title() if name_match else "Caller"
-
-        # Parse Service / Inquiry Topic
-        specialty = f"{ag.agent_name} Consultation"
-        lower_speech = full_user_speech.lower()
-        if any(w in lower_speech for w in ["property", "flat", "apartment", "bhk", "villa", "real estate", "site visit"]):
-            specialty = "Real Estate Site Visit"
-        elif any(w in lower_speech for w in ["demo", "software", "saas", "tech", "platform", "cloud"]):
-            specialty = "Product Demo & Tech Discussion"
-        elif any(w in lower_speech for w in ["car", "drive", "test drive", "vehicle", "automobile"]):
-            specialty = "Test Drive Booking"
-        elif any(w in lower_speech for w in ["dent", "teeth", "tooth"]):
-            specialty = "Dental Care"
-        elif any(w in lower_speech for w in ["cardiol", "heart"]):
-            specialty = "Cardiology"
-        elif any(w in lower_speech for w in ["legal", "lawyer", "law"]):
-            specialty = "Legal Consultation"
-        elif any(w in lower_speech for w in ["finance", "tax", "loan", "investment"]):
-            specialty = "Financial Advisory"
-        elif any(w in lower_speech for w in ["general", "consult", "meeting", "checkup"]):
-            specialty = "Client Consultation"
-
-        # Parse Slot / Date requested
-        slot_match = re.search(r'(?:appointment|slot|time|on|at)\s+([a-zA-Z0-9\s\:\.]+(?:morning|afternoon|pm|am|october|september|tomorrow|today)?)', full_user_speech, re.IGNORECASE)
-        slot_text = slot_match.group(0).strip().capitalize() if slot_match else "As requested on call"
-
-        now_str = (call.started_at or datetime.utcnow()).strftime("%Y-%m-%d %H:%M:%S")
-        phone_num = call.to_number or call.from_number or "Unknown"
-
-        from app.services.agent_metadata_service import _resolve_tool_token
-        from agent.tools.google_sheets import append_row
-
-        token = await _resolve_tool_token(sheets_tool, db)
-        if token:
-            spreadsheet_id = sheets_tool.config.get("spreadsheetId")
-            if spreadsheet_id:
-                range_name = sheets_tool.config.get("range", "A1") or "A1"
-                dur = int(call.duration_seconds or 0)
-                summary_row = [
-                    now_str,
-                    cust_name,
-                    phone_num,
-                    specialty,
-                    slot_text,
-                    f"Completed ({dur}s)"
-                ]
-                res_msg = await append_row(token, spreadsheet_id, range_name, summary_row)
-                logger.info(f"[Summary Sheet] Appended 1 clean session row for call {call.id}: {res_msg}")
-
-        # --- Google Calendar Automatic Event Scheduling ---
-        cal_tool = next((t for t in ag.tools if t.tool_type == "CALENDAR"), None)
-        if cal_tool:
-            cal_token = await _resolve_tool_token(cal_tool, db)
-            if cal_token:
-                calendar_id = cal_tool.config.get("calendarId", "primary") or "primary"
-                summary_title = f"{ag.agent_name} - {specialty} ({cust_name})"
-                start_time_str = (datetime.utcnow() + timedelta(days=1)).replace(hour=10, minute=0, second=0).strftime("%Y-%m-%d %H:%M:%S")
-                from agent.tools.google_calendar import schedule_event
-                cal_res = await schedule_event(cal_token, calendar_id, summary_title, start_time_str, 30, f"Phone lead from {phone_num}: {full_user_speech}")
-                logger.info(f"[Summary Calendar] Appended Google Calendar event: {cal_res}")
-
-        # --- Gmail Automatic Post-Call Recap Email Delivery ---
-        gmail_tool = next((t for t in ag.tools if t.tool_type == "GMAIL"), None)
-        if not gmail_tool:
-            from app.models.orm import ToolORM
-            tool_res = await db.execute(
-                select(ToolORM).where(ToolORM.user_id == call.user_id, ToolORM.tool_type == "GMAIL")
+    from app.db.session import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        try:
+            res = await session.execute(
+                select(AgentORM).options(selectinload(AgentORM.tools)).where(AgentORM.id == call.agent_id)
             )
-            gmail_tool = tool_res.scalar_one_or_none()
+            ag = res.scalar_one_or_none()
+            if not ag or not ag.tools:
+                return
 
-        if gmail_tool:
+            sheets_tool = next((t for t in ag.tools if t.tool_type == "SHEETS"), None)
+            if not sheets_tool:
+                return
+
             meta = call.call_meta or {}
-            recipient = meta.get("captured_email")
-            if not recipient:
-                recipient = await _extract_spoken_email(full_user_speech)
-            if not recipient:
-                email_match = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', full_user_speech)
-                if email_match:
-                    recipient = email_match.group(0)
-            if not recipient and any(w in lower_speech for w in ["mail", "email", "send"]):
-                user_res = await db.execute(select(UserORM).where(UserORM.id == call.user_id))
-                u = user_res.scalar_one_or_none()
-                if u and u.email:
-                    recipient = u.email
+            history = meta.get("user_speech_history") or []
+            full_user_speech = " ".join(history)
+            if not full_user_speech:
+                return
 
-            if recipient:
-                gmail_token = await _resolve_tool_token(gmail_tool, db)
-                if gmail_token:
-                    from agent.tools.gmail import send_email
-                    mail_subj = f"Call Summary: {ag.agent_name} - {specialty}"
-                    mail_body = (
-                        f"<p>Hello <b>{cust_name}</b>,</p>"
-                        f"<p>Thank you for speaking with {ag.agent_name}. Here is a summary of your call session:</p>"
-                        f"<ul>"
-                        f"<li><b>Date & Time:</b> {now_str}</li>"
-                        f"<li><b>Service requested:</b> {specialty}</li>"
-                        f"<li><b>Slot details:</b> {slot_text}</li>"
-                        f"</ul>"
-                        f"<p>If you have any questions, feel free to reply directly to this email.</p>"
-                        f"<br><p>Best regards,<br><b>{ag.agent_name} Team</b></p>"
-                    )
-                    gmail_res = await send_email(gmail_token, recipient, mail_subj, mail_body)
-                    logger.info(f"[Summary Gmail] Dispatched post-call recap email to {recipient}: {gmail_res}")
-                    up_meta = dict(call.call_meta or {})
-                    up_meta["gmail_dispatch"] = f"Dispatched to {recipient}: {gmail_res}"
-                    call.call_meta = up_meta
-                    await db.commit()
-    except Exception as exc:
-        logger.warning(f"[Summary Sheet] Exception in sheet summary logging: {exc}")
+            # Parse Patient Name
+            import re
+            name_match = re.search(r'(?:my full name is|full name is|my name is|name is|i am|this is)\s+([a-zA-Z\s]+?)(?:\s+and|\s+i|\s+my|\.|$)', full_user_speech, re.IGNORECASE)
+            cust_name = name_match.group(1).strip().title() if name_match else "Caller"
+
+            # Parse Service / Inquiry Topic
+            specialty = f"{ag.agent_name} Consultation"
+            lower_speech = full_user_speech.lower()
+            if any(w in lower_speech for w in ["property", "flat", "apartment", "bhk", "villa", "real estate", "site visit"]):
+                specialty = "Real Estate Site Visit"
+            elif any(w in lower_speech for w in ["demo", "software", "saas", "tech", "platform", "cloud"]):
+                specialty = "Product Demo & Tech Discussion"
+            elif any(w in lower_speech for w in ["car", "drive", "test drive", "vehicle", "automobile"]):
+                specialty = "Test Drive Booking"
+            elif any(w in lower_speech for w in ["dent", "teeth", "tooth"]):
+                specialty = "Dental Care"
+            elif any(w in lower_speech for w in ["cardiol", "heart"]):
+                specialty = "Cardiology"
+            elif any(w in lower_speech for w in ["legal", "lawyer", "law"]):
+                specialty = "Legal Consultation"
+            elif any(w in lower_speech for w in ["finance", "tax", "loan", "investment"]):
+                specialty = "Financial Advisory"
+            elif any(w in lower_speech for w in ["general", "consult", "meeting", "checkup"]):
+                specialty = "Client Consultation"
+
+            # Parse Slot / Date requested
+            slot_match = re.search(r'(?:appointment|slot|time|on|at)\s+([a-zA-Z0-9\s\:\.]+(?:morning|afternoon|pm|am|october|september|tomorrow|today)?)', full_user_speech, re.IGNORECASE)
+            slot_text = slot_match.group(0).strip().capitalize() if slot_match else "As requested on call"
+
+            now_str = (call.started_at or datetime.utcnow()).strftime("%Y-%m-%d %H:%M:%S")
+            phone_num = call.to_number or call.from_number or "Unknown"
+
+            from app.services.agent_metadata_service import _resolve_tool_token
+            from agent.tools.google_sheets import append_row
+
+            token = await _resolve_tool_token(sheets_tool, session)
+            if token:
+                spreadsheet_id = sheets_tool.config.get("spreadsheetId")
+                if spreadsheet_id:
+                    range_name = sheets_tool.config.get("range", "A1") or "A1"
+                    dur = int(call.duration_seconds or 0)
+                    summary_row = [
+                        now_str,
+                        cust_name,
+                        phone_num,
+                        specialty,
+                        slot_text,
+                        f"Completed ({dur}s)"
+                    ]
+                    res_msg = await append_row(token, spreadsheet_id, range_name, summary_row)
+                    logger.info(f"[Summary Sheet] Appended 1 clean session row for call {call.id}: {res_msg}")
+
+            # --- Google Calendar Automatic Event Scheduling ---
+            cal_tool = next((t for t in ag.tools if t.tool_type == "CALENDAR"), None)
+            if cal_tool:
+                cal_token = await _resolve_tool_token(cal_tool, session)
+                if cal_token:
+                    calendar_id = cal_tool.config.get("calendarId", "primary") or "primary"
+                    summary_title = f"{ag.agent_name} - {specialty} ({cust_name})"
+                    start_time_str = (datetime.utcnow() + timedelta(days=1)).replace(hour=10, minute=0, second=0).strftime("%Y-%m-%d %H:%M:%S")
+                    from agent.tools.google_calendar import schedule_event
+                    cal_res = await schedule_event(cal_token, calendar_id, summary_title, start_time_str, 30, f"Phone lead from {phone_num}: {full_user_speech}")
+                    logger.info(f"[Summary Calendar] Appended Google Calendar event: {cal_res}")
+
+            # --- Gmail Automatic Post-Call Recap Email Delivery ---
+            gmail_tool = next((t for t in ag.tools if t.tool_type == "GMAIL"), None)
+            target_user_id = call.user_id or (ag.user_id if ag else None)
+            if not gmail_tool and target_user_id:
+                from app.models.orm import ToolORM
+                tool_res = await session.execute(
+                    select(ToolORM).where(ToolORM.user_id == target_user_id, ToolORM.tool_type == "GMAIL")
+                )
+                gmail_tool = tool_res.scalar_one_or_none()
+
+            if gmail_tool:
+                meta = call.call_meta or {}
+                recipient = meta.get("captured_email")
+                if not recipient:
+                    recipient = await _extract_spoken_email(full_user_speech)
+                if not recipient:
+                    email_match = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', full_user_speech)
+                    if email_match:
+                        recipient = email_match.group(0)
+                if not recipient and any(w in lower_speech for w in ["mail", "email", "send"]) and target_user_id:
+                    user_res = await session.execute(select(UserORM).where(UserORM.id == target_user_id))
+                    u = user_res.scalar_one_or_none()
+                    if u and u.email:
+                        recipient = u.email
+
+                if recipient:
+                    gmail_token = await _resolve_tool_token(gmail_tool, session)
+                    if gmail_token:
+                        from agent.tools.gmail import send_email
+                        mail_subj = f"Call Summary: {ag.agent_name} - {specialty}"
+                        mail_body = (
+                            f"<p>Hello <b>{cust_name}</b>,</p>"
+                            f"<p>Thank you for speaking with {ag.agent_name}. Here is a summary of your call session:</p>"
+                            f"<ul>"
+                            f"<li><b>Date & Time:</b> {now_str}</li>"
+                            f"<li><b>Service requested:</b> {specialty}</li>"
+                            f"<li><b>Slot details:</b> {slot_text}</li>"
+                            f"</ul>"
+                            f"<p>If you have any questions, feel free to reply directly to this email.</p>"
+                            f"<br><p>Best regards,<br><b>{ag.agent_name} Team</b></p>"
+                        )
+                        gmail_res = await send_email(gmail_token, recipient, mail_subj, mail_body)
+                        logger.info(f"[Summary Gmail] Dispatched post-call recap email to {recipient}: {gmail_res}")
+                        call_obj = await session.get(CallORM, call.id)
+                        if call_obj:
+                            up_meta = dict(call_obj.call_meta or {})
+                            up_meta["gmail_dispatch"] = f"Dispatched to {recipient}: {gmail_res}"
+                            call_obj.call_meta = up_meta
+                            await session.commit()
+        except Exception as exc:
+            logger.warning(f"[Summary Sheet] Exception in sheet summary logging: {exc}")
 
 
 @router.post("/flow")

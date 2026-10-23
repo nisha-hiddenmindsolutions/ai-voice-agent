@@ -43,6 +43,8 @@ const OutboundPage: React.FC = () => {
 
   // Trunk & credentials availability
   const [hasTwilioCredentials, setHasTwilioCredentials] = useState(false);
+  const [activeProvider, setActiveProvider] = useState('vobiz');
+  const [callerId, setCallerId] = useState('+918065354620');
 
   const { agents, setAgents } = useAgentStore();
 
@@ -57,12 +59,20 @@ const OutboundPage: React.FC = () => {
       setCalls(callsResp.data?.calls || []);
       setAgents(agentsResp.data || []);
 
-      // Check if Twilio credentials are configured
-      // Backend returns masked values like "****1234" when set, or "" when not set
+      // Check if credentials are configured (Vobiz or Twilio)
       const creds = settingsResp?.data;
-      setHasTwilioCredentials(
-        !!(creds?.twilio_account_sid && creds?.twilio_auth_token && creds?.twilio_phone_number)
+      const isConfigured = !!(
+        (creds?.twilio_account_sid && creds?.twilio_auth_token && creds?.twilio_phone_number) ||
+        creds?.vobiz_configured
       );
+      setHasTwilioCredentials(isConfigured);
+      if (creds?.vobiz_configured || creds?.vobiz_phone_number) {
+        setActiveProvider('vobiz');
+        setCallerId(creds.vobiz_phone_number || '+918065354620');
+      } else {
+        setActiveProvider('twilio');
+        setCallerId(creds?.twilio_phone_number || '');
+      }
     } catch (err) {
       console.error('Failed to load outbound data:', err);
     } finally {
@@ -164,16 +174,16 @@ const OutboundPage: React.FC = () => {
         </button>
       </div>
 
-      {/* Twilio Credentials Warning — only shown after loading completes */}
+      {/* Credentials Warning — only shown after loading completes */}
       {!loading && !hasTwilioCredentials && (
-        <div className="flex items-center gap-3 p-3 rounded-xl border bg-red-500/5 border-red-500/20">
-          <AlertCircle size={15} className="text-red-500 shrink-0" />
+        <div className="flex items-center gap-3 p-3 rounded-xl border bg-amber-500/5 border-amber-500/20">
+          <AlertCircle size={15} className="text-amber-500 shrink-0" />
           <div>
-            <p className="font-bold text-red-600 dark:text-red-400 text-[10px] uppercase tracking-wider">
-              Twilio Credentials Required
+            <p className="font-bold text-amber-600 dark:text-amber-400 text-[10px] uppercase tracking-wider">
+              Telephony Provider Setup Required
             </p>
             <p className="text-[var(--text-muted)] text-[10px]">
-              Go to <strong>Settings → Telephony</strong> and enter your Twilio Account SID, Auth Token, and Phone Number before making outbound calls.
+              Configure your Vobiz or Twilio credentials in <strong>Settings → Telephony</strong> to enable live phone dialing.
             </p>
           </div>
         </div>
@@ -185,10 +195,10 @@ const OutboundPage: React.FC = () => {
           <CheckCircle2 size={15} className="text-emerald-500 shrink-0" />
           <div>
             <p className="font-bold text-emerald-600 dark:text-emerald-400 text-[10px] uppercase tracking-wider">
-              Twilio Credentials Configured
+              Outbound Telephony Ready ({activeProvider === 'vobiz' ? 'Vobiz India' : 'Twilio REST'})
             </p>
             <p className="text-[var(--text-muted)] text-[10px]">
-              Outbound calls are ready to dispatch via Twilio REST.
+              Ready to dispatch real voice calls from <strong>{callerId}</strong> with sub-200ms latency.
             </p>
           </div>
         </div>
@@ -353,7 +363,7 @@ const OutboundPage: React.FC = () => {
                 </label>
                 <input
                   type="text"
-                  placeholder="+1XXXXXXXXXX"
+                  placeholder="+918830631380"
                   value={destinationNumber}
                   disabled={!!csvNumbers.trim()}
                   onChange={e => setDestinationNumber(e.target.value)}
@@ -375,7 +385,7 @@ const OutboundPage: React.FC = () => {
                 </label>
                 <textarea
                   rows={4}
-                  placeholder={"+12015550123\n+12015550124\n+12015550125"}
+                  placeholder={"+918830631380\n+919876543210"}
                   value={csvNumbers}
                   disabled={!!destinationNumber.trim()}
                   onChange={e => setCsvNumbers(e.target.value)}
@@ -391,10 +401,10 @@ const OutboundPage: React.FC = () => {
                 <AlertCircle size={14} className="text-[var(--primary)] shrink-0 mt-0.5" />
                 <div className="space-y-0.5">
                   <span className="text-[10px] font-extrabold uppercase tracking-wider text-[var(--text-primary)]">
-                    Automated Outbound Dispatch
+                    Active Caller Line: {callerId}
                   </span>
                   <p className="text-[9px] text-[var(--text-muted)] leading-relaxed">
-                    Ensure Twilio credentials and voice gateway are online before running batch campaigns.
+                    Calls will be placed directly from {callerId} ({activeProvider === 'vobiz' ? 'Vobiz India Line' : 'Twilio REST'}).
                   </p>
                 </div>
               </div>

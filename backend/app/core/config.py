@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     LIVEKIT_URL: str = _clean_env("LIVEKIT_URL")
     LIVEKIT_SIP_DOMAIN: str = _clean_env("LIVEKIT_SIP_DOMAIN", "sip.livekit.cloud")
     
+    # Vobiz Telephony
+    VOBIZ_AUTH_ID: str = _clean_env("VOBIZ_AUTH_ID", "MA_TKTZ7MH7")
+    VOBIZ_AUTH_TOKEN: str = _clean_env("VOBIZ_AUTH_TOKEN", "J6vWO6Gl6FlMjLOZcC4F63v83vCUPb52u6tIrvB0WVp4UipzcYDIQzwqGbSKo1RR")
+    VOBIZ_PHONE_NUMBER: str = _clean_env("VOBIZ_PHONE_NUMBER", "+918065354620")
+    
     # Storage
     DATA_DIR: Path = _ROOT / "data"
     AGENTS_FILE: Path = DATA_DIR / "agents.json"

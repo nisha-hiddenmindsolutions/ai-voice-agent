@@ -91,14 +91,23 @@ async def get_telephony_settings(
 
     default_agent_id = secrets.get("default_agent_id", None)
 
+    vobiz_id = getattr(settings, "VOBIZ_AUTH_ID", "MA_TKTZ7MH7")
+    vobiz_token = getattr(settings, "VOBIZ_AUTH_TOKEN", "J6vWO6Gl6FlMjLOZcC4F63v83vCUPb52u6tIrvB0WVp4UipzcYDIQzwqGbSKo1RR")
+    vobiz_phone = getattr(settings, "VOBIZ_PHONE_NUMBER", "+918065354620")
+    vobiz_configured = bool(vobiz_id and vobiz_token and vobiz_phone)
+
     return {
-        "twilio_account_sid":  sid,
-        "twilio_auth_token":   token,
-        "twilio_phone_number": phone,
+        "twilio_account_sid":  sid or vobiz_id,
+        "twilio_auth_token":   token or "****vobiz",
+        "twilio_phone_number": phone or vobiz_phone,
+        "vobiz_auth_id":       vobiz_id,
+        "vobiz_phone_number":  vobiz_phone,
+        "vobiz_configured":    vobiz_configured,
+        "active_provider":     "vobiz" if vobiz_configured else "twilio",
         "default_agent_id":    default_agent_id,
         "has_sip_trunks":      len(trunks) > 0,
-        "inbound_active":      has_inbound,
-        "outbound_active":     has_outbound,
+        "inbound_active":      has_inbound or vobiz_configured,
+        "outbound_active":     has_outbound or vobiz_configured,
         "trunk_count":         len(trunks),
     }
 

@@ -443,13 +443,18 @@ async def trigger_outbound_call(
 
         # ── 2. Redirect to Twilio / Vobiz fallback if requested ───────────────────────
         if payload.use_twilio_fallback:
-            if os.getenv("VOBIZ_AUTH_TOKEN"):
+            from app.core.config import settings
+            vobiz_token = os.getenv("VOBIZ_AUTH_TOKEN") or getattr(settings, "VOBIZ_AUTH_TOKEN", None)
+            if vobiz_token:
                 from app.api.v1.endpoints.vobiz import _trigger_vobiz_outbound_internal
                 return await _trigger_vobiz_outbound_internal(
                     to_number=payload.to_number,
                     agent_id=payload.agent_id,
                     current_user=current_user,
                     db=db,
+                    auth_token=vobiz_token,
+                    auth_id=os.getenv("VOBIZ_AUTH_ID") or getattr(settings, "VOBIZ_AUTH_ID", "MA_TKTZ7MH7"),
+                    from_number=os.getenv("VOBIZ_PHONE_NUMBER") or getattr(settings, "VOBIZ_PHONE_NUMBER", "+918065354620"),
                 )
             from app.api.v1.endpoints.twilio import _trigger_twilio_outbound_internal
             try:

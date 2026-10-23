@@ -795,7 +795,7 @@ async def twilio_outbound_flow(
             speech_result = None
             try:
                 form_data = await request.form()
-                speech_result = form_data.get("SpeechResult")
+                speech_result = form_data.get("SpeechResult") or form_data.get("Speech")
             except Exception:
                 pass
 

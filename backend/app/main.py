@@ -31,6 +31,7 @@ from app.api.v1.endpoints import (
     providers,
     dashboard,
     twilio,
+    vobiz,
     telephony, 
     knowledge,
     livekit_webhook,
@@ -126,6 +127,7 @@ app.include_router(tools.router, prefix=f"{settings.API_V1_STR}/tools", tags=["T
 app.include_router(numbers.router, prefix=f"{settings.API_V1_STR}/numbers", tags=["Numbers"])
 app.include_router(calls.router, prefix=f"{settings.API_V1_STR}/calls", tags=["Calls"])
 app.include_router(twilio.router, prefix=f"{settings.API_V1_STR}/telephony/twilio", tags=["Twilio Telephony"])
+app.include_router(vobiz.router, prefix=f"{settings.API_V1_STR}/telephony/vobiz", tags=["Vobiz Telephony"])
 app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["Auth"])
 app.include_router(integrations.router, prefix=f"{settings.API_V1_STR}/integrations", tags=["Integrations"])
 app.include_router(keys.router, prefix=f"{settings.API_V1_STR}/keys", tags=["Keys"])

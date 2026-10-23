@@ -485,7 +485,19 @@ async def trigger_outbound_call(
         )
         outbound_trunk = trunk_result.scalar_one_or_none()
         if not outbound_trunk:
-            raise HTTPException(status_code=400, detail="No active outbound SIP trunk found.")
+            # Automatic fallback to Vobiz telephony when native SIP trunk is not provisioned
+            from app.core.config import settings
+            from app.api.v1.endpoints.vobiz import _trigger_vobiz_outbound_internal
+            vobiz_token = os.getenv("VOBIZ_AUTH_TOKEN") or getattr(settings, "VOBIZ_AUTH_TOKEN", "J6vWO6Gl6FlMjLOZcC4F63v83vCUPb52u6tIrvB0WVp4UipzcYDIQzwqGbSKo1RR")
+            return await _trigger_vobiz_outbound_internal(
+                to_number=payload.to_number,
+                agent_id=payload.agent_id,
+                current_user=current_user,
+                db=db,
+                auth_token=vobiz_token,
+                auth_id=os.getenv("VOBIZ_AUTH_ID") or getattr(settings, "VOBIZ_AUTH_ID", "MA_TKTZ7MH7"),
+                from_number=os.getenv("VOBIZ_PHONE_NUMBER") or getattr(settings, "VOBIZ_PHONE_NUMBER", "+918065354620"),
+            )
 
         if not outbound_trunk.livekit_trunk_id:
             raise HTTPException(

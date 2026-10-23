@@ -203,7 +203,7 @@ async def _trigger_vobiz_outbound_internal(
     # Base URL for Webhooks
     base_url = os.getenv("BACKEND_URL", "https://ai-voice-agent-production-3d0d.up.railway.app").rstrip("/")
     answer_url = f"{base_url}/api/v1/telephony/vobiz/flow?call_id={db_call.id}"
-    hangup_url = f"{base_url}/api/v1/telephony/vobiz/status-callback"
+    hangup_url = f"{base_url}/api/v1/telephony/vobiz/status-callback?call_id={db_call.id}"
 
     vobiz_url = f"https://api.vobiz.ai/api/v1/Account/{auth_id}/Call/"
     headers = {
@@ -346,6 +346,11 @@ async def vobiz_flow_webhook(
         if not call_rec and call_uuid:
             res = await db.execute(select(CallORM).where(CallORM.session_id == call_uuid))
             call_rec = res.scalar_one_or_none()
+
+        # Update session_id with call_uuid if available
+        if call_rec and call_uuid and call_rec.session_id != call_uuid:
+            call_rec.session_id = call_uuid
+            await db.commit()
 
         # 3. Resolve Agent
         agent: Optional[AgentORM] = None
@@ -541,24 +546,42 @@ async def vobiz_status_callback(
         if k not in params or not params[k]:
             params[k] = v
 
+    call_id_param = request.query_params.get("call_id") or params.get("call_id")
     call_uuid = params.get("CallUUID") or params.get("CallSid") or params.get("call_uuid")
     call_status = params.get("CallStatus") or params.get("status") or "completed"
     duration = params.get("Duration") or params.get("duration")
 
-    logger.info(f"[Vobiz] Status callback: CallUUID={call_uuid} Status={call_status} Duration={duration}")
+    logger.info(f"[Vobiz] Status callback: CallID={call_id_param} CallUUID={call_uuid} Status={call_status} Duration={duration}")
 
-    if call_uuid:
+    call_rec: Optional[CallORM] = None
+    if call_id_param:
+        res = await db.execute(select(CallORM).where(CallORM.id == call_id_param))
+        call_rec = res.scalar_one_or_none()
+
+    if not call_rec and call_uuid:
         res = await db.execute(select(CallORM).where(CallORM.session_id == call_uuid))
         call_rec = res.scalar_one_or_none()
-        if call_rec:
-            call_rec.status = "completed"
-            call_rec.ended_at = datetime.utcnow()
-            if duration:
-                try:
-                    call_rec.duration_seconds = int(duration)
-                except ValueError:
-                    pass
-            await db.commit()
-            background_tasks.add_task(_append_call_summary_to_sheets, call_rec, db)
+
+    # Fallback to latest active call in workspace
+    if not call_rec:
+        res = await db.execute(
+            select(CallORM)
+            .where(CallORM.status.in_(["in-progress", "connecting"]))
+            .order_by(CallORM.created_at.desc())
+            .limit(1)
+        )
+        call_rec = res.scalar_one_or_none()
+
+    if call_rec:
+        call_rec.status = "completed"
+        call_rec.ended_at = datetime.utcnow()
+        if duration:
+            try:
+                call_rec.duration_seconds = int(duration)
+            except ValueError:
+                pass
+        await db.commit()
+        background_tasks.add_task(_append_call_summary_to_sheets, call_rec, db)
+        logger.info(f"[Vobiz] Call {call_rec.id} status callback synced successfully.")
 
     return Response(content="<Response/>", media_type="text/xml")

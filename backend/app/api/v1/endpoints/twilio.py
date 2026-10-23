@@ -626,6 +626,62 @@ async def _check_and_execute_linked_tools(agent_id: str, speech_result: str, cal
         logger.warning(f"[Flow Tools] Error accumulating speech: {exc}")
 
 
+def _extract_clean_slot(text: str) -> tuple[str, int, int, int]:
+    """
+    Extracts a clean, short slot (e.g. 'Tomorrow at 4:00 PM') and schedule time components.
+    Returns: (slot_display_str, day_offset, hour_24, minute)
+    """
+    if not text:
+        return "As requested on call", 1, 11, 0
+
+    lower = text.lower()
+    day_str = "Tomorrow"
+    day_offset = 1
+    if "today" in lower:
+        day_str = "Today"
+        day_offset = 0
+    elif "day after tomorrow" in lower:
+        day_str = "Day After Tomorrow"
+        day_offset = 2
+    else:
+        for weekday, idx in [("monday", 0), ("tuesday", 1), ("wednesday", 2), ("thursday", 3), ("friday", 4), ("saturday", 5), ("sunday", 6)]:
+            if weekday in lower:
+                day_str = weekday.capitalize()
+                now_weekday = datetime.utcnow().weekday()
+                day_offset = (idx - now_weekday) % 7
+                if day_offset == 0:
+                    day_offset = 7
+                break
+
+    time_match = re.search(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)(?:\b|\s|[.,]|$)', lower)
+    hour = 11
+    minute = 0
+    time_str = ""
+    if time_match:
+        h = int(time_match.group(1))
+        m = int(time_match.group(2) or 0)
+        meridiem = time_match.group(3).replace('.', '').upper()
+        time_str = f"{h}:{m:02d} {meridiem}"
+        if meridiem == "PM" and h < 12:
+            h += 12
+        elif meridiem == "AM" and h == 12:
+            h = 0
+        hour = h
+        minute = m
+    elif "morning" in lower:
+        time_str = "10:00 AM"
+        hour = 10
+    elif "afternoon" in lower:
+        time_str = "2:00 PM"
+        hour = 14
+    elif "evening" in lower:
+        time_str = "5:00 PM"
+        hour = 17
+
+    slot_display = f"{day_str} at {time_str}" if time_str else day_str
+    return slot_display, day_offset, hour, minute
+
+
 async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSession] = None):
     """Appends EXACTLY 1 clean summary lead row per call session upon call completion."""
     from app.db.session import AsyncSessionLocal
@@ -679,9 +735,8 @@ async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSessio
             elif any(w in lower_speech for w in ["general", "consult", "meeting", "checkup"]):
                 specialty = "Client Consultation"
 
-            # Parse Slot / Date requested
-            slot_match = re.search(r'(?:appointment|slot|time|on|at)\s+([a-zA-Z0-9\s\:\.]+(?:morning|afternoon|pm|am|october|september|tomorrow|today)?)', full_user_speech, re.IGNORECASE)
-            slot_text = slot_match.group(0).strip().capitalize() if slot_match else "As requested on call"
+            # Parse Slot / Date requested cleanly (e.g. 'Tomorrow at 4:00 PM')
+            slot_text, day_offset, sched_hour, sched_minute = _extract_clean_slot(full_user_speech)
 
             now_str = (call.started_at or datetime.utcnow()).strftime("%Y-%m-%d %H:%M:%S")
             phone_num = call.to_number or call.from_number or "Unknown"
@@ -720,9 +775,16 @@ async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSessio
                 if cal_token:
                     calendar_id = cal_tool.config.get("calendarId", "primary") or "primary"
                     summary_title = f"{ag.agent_name} - {specialty} ({cust_name})"
-                    start_time_str = (datetime.utcnow() + timedelta(days=1)).replace(hour=10, minute=0, second=0).strftime("%Y-%m-%d %H:%M:%S")
+                    start_time_str = (datetime.utcnow() + timedelta(days=day_offset)).replace(hour=sched_hour, minute=sched_minute, second=0).strftime("%Y-%m-%d %H:%M:%S")
+                    cal_desc = (
+                        f"Client Name: {cust_name}\n"
+                        f"Phone: {phone_num}\n"
+                        f"Service: {specialty}\n"
+                        f"Scheduled Slot: {slot_text}\n"
+                        f"Status: Confirmed via Voice Call"
+                    )
                     from agent.tools.google_calendar import schedule_event
-                    cal_res = await schedule_event(cal_token, calendar_id, summary_title, start_time_str, 30, f"Phone lead from {phone_num}: {full_user_speech}")
+                    cal_res = await schedule_event(cal_token, calendar_id, summary_title, start_time_str, 30, cal_desc)
                     logger.info(f"[Summary Calendar] Appended Google Calendar event: {cal_res}")
 
             # --- Gmail Automatic Post-Call Recap Email Delivery ---
@@ -754,17 +816,20 @@ async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSessio
                     gmail_token = await _resolve_tool_token(gmail_tool, session)
                     if gmail_token:
                         from agent.tools.gmail import send_email
-                        mail_subj = f"Call Summary: {ag.agent_name} - {specialty}"
+                        mail_subj = f"Appointment Confirmation: {specialty} - {ag.agent_name}"
                         mail_body = (
+                            f"<div style='font-family: Arial, sans-serif; color: #222; max-width: 600px; line-height: 1.6;'>"
                             f"<p>Hello <b>{cust_name}</b>,</p>"
-                            f"<p>Thank you for speaking with {ag.agent_name}. Here is a summary of your call session:</p>"
-                            f"<ul>"
-                            f"<li><b>Date & Time:</b> {now_str}</li>"
-                            f"<li><b>Service requested:</b> {specialty}</li>"
-                            f"<li><b>Slot details:</b> {slot_text}</li>"
-                            f"</ul>"
-                            f"<p>If you have any questions, feel free to reply directly to this email.</p>"
+                            f"<p>Thank you for speaking with <b>{ag.agent_name}</b>. Here are your confirmed appointment details:</p>"
+                            f"<table style='width: 100%; border-collapse: collapse; margin: 16px 0; border: 1px solid #e0e0e0; border-radius: 6px; overflow: hidden;'>"
+                            f"<tr style='background-color: #f8f9fa; border-bottom: 1px solid #e0e0e0;'><td style='padding: 10px 14px; color: #666; width: 140px;'><b>Service</b></td><td style='padding: 10px 14px; font-weight: bold;'>{specialty}</td></tr>"
+                            f"<tr style='border-bottom: 1px solid #e0e0e0;'><td style='padding: 10px 14px; color: #666;'><b>Scheduled Slot</b></td><td style='padding: 10px 14px; color: #1a73e8; font-weight: bold;'>{slot_text}</td></tr>"
+                            f"<tr style='border-bottom: 1px solid #e0e0e0;'><td style='padding: 10px 14px; color: #666;'><b>Contact Phone</b></td><td style='padding: 10px 14px;'>{phone_num}</td></tr>"
+                            f"<tr><td style='padding: 10px 14px; color: #666;'><b>Status</b></td><td style='padding: 10px 14px; color: #0d904f; font-weight: bold;'>Confirmed</td></tr>"
+                            f"</table>"
+                            f"<p>If you have any questions or need to reschedule, simply reply directly to this email.</p>"
                             f"<br><p>Best regards,<br><b>{ag.agent_name} Team</b></p>"
+                            f"</div>"
                         )
                         gmail_res = await send_email(gmail_token, recipient, mail_subj, mail_body)
                         logger.info(f"[Summary Gmail] Dispatched post-call recap email to {recipient}: {gmail_res}")

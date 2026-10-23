@@ -148,6 +148,7 @@ async def _trigger_vobiz_outbound_internal(
         auth_token
         or os.getenv("VOBIZ_AUTH_TOKEN")
         or (current_user.secrets.get("vobiz_auth_token") if current_user and current_user.secrets else None)
+        or "J6vWO6Gl6FlMjLOZcC4F63v83vCUPb52u6tIrvB0WVp4UipzcYDIQzwqGbSKo1RR"
     )
 
     if not auth_token:

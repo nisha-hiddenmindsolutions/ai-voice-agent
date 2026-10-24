@@ -777,14 +777,23 @@ async def _extract_call_summary_details(
         elif any(w in lower_speech for w in ["dent", "teeth", "tooth"]):
             specialty = "Dental Care"
 
-    name_match = re.search(r'(?:my full name is|full name is|my name is|patient name is|name is|i am|this is)\s+([a-zA-Z]+)(?:\s+([a-zA-Z]+))?(?:\s+and\b|\s+my\b|\s+i\s+|\.|\,|$)', full_user_speech, re.IGNORECASE)
-    if name_match:
-        part1 = name_match.group(1).strip().title()
-        part2 = name_match.group(2).strip().title() if name_match.group(2) else ""
-        raw_n = f"{part1} {part2}".strip()
-        raw_n = re.sub(r'\b(Patient|Name|Full|Caller)\b', '', raw_n, flags=re.IGNORECASE).strip()
-        if raw_n:
-            cust_name = raw_n
+    # Name extraction across turns
+    found_name = None
+    all_turns = [m.get("content", "") for m in conversation_history if isinstance(m, dict) and m.get("role") == "user"]
+    if not all_turns:
+        all_turns = [full_user_speech]
+
+    for turn in all_turns:
+        m = re.search(r'(?:patient name is|full name is|my name is|name is|i am|this is)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)', turn, re.IGNORECASE)
+        if m:
+            raw_tokens = m.group(1).split()
+            valid_words = [w for w in raw_tokens if w.lower() not in ('and', 'i', 'want', 'a', 'patient', 'name', 'the', 'my', 'to', 'for', 'an', 'at')]
+            if valid_words:
+                found_name = " ".join(valid_words).title()
+                break
+
+    if found_name:
+        cust_name = found_name
 
     slot_heur, _, _, _ = _extract_clean_slot(full_user_speech)
     if slot_heur:

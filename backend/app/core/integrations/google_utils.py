@@ -59,8 +59,9 @@ class GoogleManager:
             async with httpx.AsyncClient() as client:
                 resp = await client.post(token_url, data=data)
                 if resp.status_code != 200:
-                    logger.error(f"Failed to refresh Google token: {resp.text}")
-                    return None
+                    logger.error(f"Failed to refresh Google token (status {resp.status_code}): {resp.text}")
+                    # Fallback to existing unexpired or cached access token rather than hard failing
+                    return access_token
                 
                 new_tokens = resp.json()
                 new_access = new_tokens.get("access_token")

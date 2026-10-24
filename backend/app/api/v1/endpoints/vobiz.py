@@ -459,7 +459,7 @@ async def vobiz_flow_webhook(
             await db.commit()
 
             # Trigger Google Sheets, Google Calendar, and Gmail sync in background
-            background_tasks.add_task(_append_call_summary_to_sheets, call_rec, db)
+            background_tasks.add_task(_append_call_summary_to_sheets, call_rec.id, db)
 
             closing_msg = (
                 f"You are very welcome! Your details have been confirmed and recorded. "
@@ -581,7 +581,7 @@ async def vobiz_status_callback(
             except ValueError:
                 pass
         await db.commit()
-        background_tasks.add_task(_append_call_summary_to_sheets, call_rec, db)
+        background_tasks.add_task(_append_call_summary_to_sheets, call_rec.id, db)
         logger.info(f"[Vobiz] Call {call_rec.id} status callback synced successfully.")
 
     return Response(content="<Response/>", media_type="text/xml")
@@ -594,64 +594,75 @@ async def vobiz_diagnostic(
     db: AsyncSession = Depends(get_db),
 ):
     """Diagnostic endpoint to inspect DB calls, tools, and Google token resolution."""
+    import traceback
+    from app.models.orm import IntegrationORM, ToolORM
     from app.services.agent_metadata_service import _resolve_tool_token
     from app.core.config import settings
 
-    # 1. Latest 5 Calls
-    c_res = await db.execute(select(CallORM).order_by(CallORM.created_at.desc()).limit(5))
-    calls = c_res.scalars().all()
-    calls_data = []
-    for c in calls:
-        calls_data.append({
-            "id": c.id,
-            "session_id": c.session_id,
-            "agent_id": c.agent_id,
-            "status": c.status,
-            "direction": c.direction,
-            "duration": c.duration_seconds,
-            "meta": c.call_meta,
-            "created_at": str(c.created_at),
-        })
+    try:
+        # 1. Latest 5 Calls
+        c_res = await db.execute(select(CallORM).order_by(CallORM.created_at.desc()).limit(5))
+        calls = c_res.scalars().all()
+        calls_data = []
+        for c in calls:
+            direction_str = c.direction.value if hasattr(c.direction, "value") else str(c.direction)
+            calls_data.append({
+                "id": c.id,
+                "session_id": c.session_id,
+                "agent_id": c.agent_id,
+                "status": c.status,
+                "direction": direction_str,
+                "duration": c.duration_seconds,
+                "meta": c.call_meta,
+                "created_at": str(c.created_at),
+            })
 
-    # 2. Integrations
-    int_res = await db.execute(select(IntegrationORM).order_by(IntegrationORM.created_at.desc()))
-    ints = int_res.scalars().all()
-    ints_data = []
-    for i in ints:
-        ints_data.append({
-            "id": i.id,
-            "provider": i.provider,
-            "type": i.integration_type,
-            "expires_at": str(i.expires_at),
-            "has_access": bool(i.access_token),
-            "has_refresh": bool(i.refresh_token),
-        })
+        # 2. Integrations
+        int_res = await db.execute(select(IntegrationORM).order_by(IntegrationORM.created_at.desc()))
+        ints = int_res.scalars().all()
+        ints_data = []
+        for i in ints:
+            ints_data.append({
+                "id": i.id,
+                "provider": i.provider,
+                "type": i.integration_type,
+                "expires_at": str(i.expires_at),
+                "has_access": bool(i.access_token),
+                "has_refresh": bool(i.refresh_token),
+            })
 
-    # 3. Tools and token resolution
-    tools_res = await db.execute(select(ToolORM).order_by(ToolORM.created_at.desc()))
-    tools = tools_res.scalars().all()
-    tools_data = []
-    for t in tools:
-        resolved_token = None
-        err = None
-        try:
-            resolved_token = await _resolve_tool_token(t, db)
-        except Exception as e:
-            err = str(e)
-        tools_data.append({
-            "id": t.id,
-            "name": t.name,
-            "tool_type": t.tool_type,
-            "integration_id": t.integration_id,
-            "config": t.config,
-            "token_resolved": bool(resolved_token),
-            "token_prefix": resolved_token[:10] if resolved_token else None,
-            "error": err,
-        })
+        # 3. Tools and token resolution
+        tools_res = await db.execute(select(ToolORM).order_by(ToolORM.created_at.desc()))
+        tools = tools_res.scalars().all()
+        tools_data = []
+        for t in tools:
+            resolved_token = None
+            err = None
+            try:
+                resolved_token = await _resolve_tool_token(t, db)
+            except Exception as e:
+                err = str(e)
+            tools_data.append({
+                "id": t.id,
+                "name": t.name,
+                "tool_type": t.tool_type,
+                "integration_id": t.integration_id,
+                "config": t.config,
+                "token_resolved": bool(resolved_token),
+                "token_prefix": resolved_token[:10] if resolved_token else None,
+                "error": err,
+            })
 
-    return {
-        "google_client_id_configured": bool(settings.GOOGLE_CLIENT_ID),
-        "calls": calls_data,
-        "integrations": ints_data,
-        "tools": tools_data,
-    }
+        return {
+            "google_client_id_configured": bool(settings.GOOGLE_CLIENT_ID),
+            "google_client_secret_configured": bool(settings.GOOGLE_CLIENT_SECRET),
+            "calls": calls_data,
+            "integrations": ints_data,
+            "tools": tools_data,
+        }
+    except Exception as exc:
+        return {
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+

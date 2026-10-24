@@ -682,31 +682,52 @@ def _extract_clean_slot(text: str) -> tuple[str, int, int, int]:
     return slot_display, day_offset, hour, minute
 
 
-async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSession] = None):
+async def _append_call_summary_to_sheets(call: Any, db: Optional[AsyncSession] = None):
     """Appends EXACTLY 1 clean summary lead row per call session upon call completion."""
     from app.db.session import AsyncSessionLocal
+    import traceback
+
+    call_id = call.id if hasattr(call, "id") else str(call)
+    logger.info(f"[Summary] Processing post-call sync for call_id={call_id}")
+
     async with AsyncSessionLocal() as session:
         try:
-            res = await session.execute(
-                select(AgentORM).options(selectinload(AgentORM.tools)).where(AgentORM.id == call.agent_id)
-            )
-            ag = res.scalar_one_or_none()
-            if not ag:
+            # Re-fetch the call object fresh inside this session to prevent DetachedInstanceError
+            call_obj = await session.get(CallORM, call_id)
+            if not call_obj:
+                logger.error(f"[Summary] Call {call_id} not found in database.")
                 return
 
-            sheets_tool = next((t for t in ag.tools if t.tool_type == "SHEETS"), None) if ag.tools else None
-            if not sheets_tool:
-                from app.models.orm import ToolORM
-                s_res = await session.execute(
-                    select(ToolORM).where(ToolORM.tool_type == "SHEETS").order_by(ToolORM.created_at.desc())
+            # Resolve Agent
+            ag = None
+            if call_obj.agent_id:
+                res = await session.execute(
+                    select(AgentORM).options(selectinload(AgentORM.tools)).where(AgentORM.id == call_obj.agent_id)
                 )
-                sheets_tool = s_res.scalars().first()
+                ag = res.scalar_one_or_none()
 
-            meta = call.call_meta or {}
+            if not ag:
+                # Fallback to latest agent
+                ag_res = await session.execute(
+                    select(AgentORM).options(selectinload(AgentORM.tools)).order_by(AgentORM.created_at.desc()).limit(1)
+                )
+                ag = ag_res.scalar_one_or_none()
+
+            agent_name = ag.agent_name if ag else "Voice Assistant"
+
+            # Resolve User Speech / Conversation
+            meta = dict(call_obj.call_meta or {})
             history = meta.get("user_speech_history") or []
-            full_user_speech = " ".join(history)
+            full_user_speech = " ".join(history).strip()
+
             if not full_user_speech:
-                return
+                conv = meta.get("conversation_history") or []
+                user_turns = [m.get("content", "") for m in conv if isinstance(m, dict) and m.get("role") == "user"]
+                full_user_speech = " ".join(user_turns).strip()
+
+            if not full_user_speech:
+                full_user_speech = "Voice call appointment consultation"
+                logger.info(f"[Summary] Using fallback speech description for call {call_id}")
 
             # Parse Patient Name
             import re
@@ -714,7 +735,7 @@ async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSessio
             cust_name = name_match.group(1).strip().title() if name_match else "Caller"
 
             # Parse Service / Inquiry Topic
-            specialty = f"{ag.agent_name} Consultation"
+            specialty = f"{agent_name} Consultation"
             lower_speech = full_user_speech.lower()
             if any(w in lower_speech for w in ["property", "flat", "apartment", "bhk", "villa", "real estate", "site visit"]):
                 specialty = "Real Estate Site Visit"
@@ -738,33 +759,48 @@ async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSessio
             # Parse Slot / Date requested cleanly (e.g. 'Tomorrow at 4:00 PM')
             slot_text, day_offset, sched_hour, sched_minute = _extract_clean_slot(full_user_speech)
 
-            now_str = (call.started_at or datetime.utcnow()).strftime("%Y-%m-%d %H:%M:%S")
-            phone_num = call.to_number or call.from_number or "Unknown"
+            now_str = (call_obj.started_at or datetime.utcnow()).strftime("%Y-%m-%d %H:%M:%S")
+            phone_num = call_obj.to_number or call_obj.from_number or "Unknown"
 
             from app.services.agent_metadata_service import _resolve_tool_token
-            from agent.tools.google_sheets import append_row
+            from app.models.orm import ToolORM
 
-            token = await _resolve_tool_token(sheets_tool, session)
-            if token:
-                spreadsheet_id = sheets_tool.config.get("spreadsheetId")
-                if spreadsheet_id:
-                    range_name = sheets_tool.config.get("range", "A1") or "A1"
-                    dur = int(call.duration_seconds or 0)
-                    summary_row = [
-                        now_str,
-                        cust_name,
-                        phone_num,
-                        specialty,
-                        slot_text,
-                        f"Completed ({dur}s)"
-                    ]
-                    res_msg = await append_row(token, spreadsheet_id, range_name, summary_row)
-                    logger.info(f"[Summary Sheet] Appended 1 clean session row for call {call.id}: {res_msg}")
+            # --- 1. GOOGLE SHEETS ---
+            sheets_tool = next((t for t in ag.tools if t.tool_type == "SHEETS"), None) if (ag and ag.tools) else None
+            if not sheets_tool:
+                s_res = await session.execute(
+                    select(ToolORM).where(ToolORM.tool_type == "SHEETS").order_by(ToolORM.created_at.desc())
+                )
+                sheets_tool = s_res.scalars().first()
 
-            # --- Google Calendar Automatic Event Scheduling ---
-            cal_tool = next((t for t in ag.tools if t.tool_type == "CALENDAR"), None) if ag.tools else None
+            if sheets_tool:
+                token = await _resolve_tool_token(sheets_tool, session)
+                if token:
+                    spreadsheet_id = sheets_tool.config.get("spreadsheetId")
+                    if spreadsheet_id:
+                        range_name = sheets_tool.config.get("range", "A1") or "A1"
+                        dur = int(call_obj.duration_seconds or 0)
+                        summary_row = [
+                            now_str,
+                            cust_name,
+                            phone_num,
+                            specialty,
+                            slot_text,
+                            f"Completed ({dur}s)"
+                        ]
+                        from agent.tools.google_sheets import append_row
+                        res_msg = await append_row(token, spreadsheet_id, range_name, summary_row)
+                        logger.info(f"[Summary Sheet] Appended 1 clean session row for call {call_obj.id}: {res_msg}")
+                    else:
+                        logger.error(f"[Summary Sheet] sheets_tool {sheets_tool.id} has no spreadsheetId")
+                else:
+                    logger.error(f"[Summary Sheet] Could not resolve token for sheets tool {sheets_tool.id}")
+            else:
+                logger.warning("[Summary Sheet] No SHEETS tool found in workspace.")
+
+            # --- 2. GOOGLE CALENDAR ---
+            cal_tool = next((t for t in ag.tools if t.tool_type == "CALENDAR"), None) if (ag and ag.tools) else None
             if not cal_tool:
-                from app.models.orm import ToolORM
                 c_res = await session.execute(
                     select(ToolORM).where(ToolORM.tool_type == "CALENDAR").order_by(ToolORM.created_at.desc())
                 )
@@ -774,7 +810,7 @@ async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSessio
                 cal_token = await _resolve_tool_token(cal_tool, session)
                 if cal_token:
                     calendar_id = cal_tool.config.get("calendarId", "primary") or "primary"
-                    summary_title = f"{ag.agent_name} - {specialty} ({cust_name})"
+                    summary_title = f"{agent_name} - {specialty} ({cust_name})"
                     start_time_str = (datetime.utcnow() + timedelta(days=day_offset)).replace(hour=sched_hour, minute=sched_minute, second=0).strftime("%Y-%m-%d %H:%M:%S")
                     cal_desc = (
                         f"Client Name: {cust_name}\n"
@@ -786,19 +822,21 @@ async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSessio
                     from agent.tools.google_calendar import schedule_event
                     cal_res = await schedule_event(cal_token, calendar_id, summary_title, start_time_str, 30, cal_desc)
                     logger.info(f"[Summary Calendar] Appended Google Calendar event: {cal_res}")
+                else:
+                    logger.error(f"[Summary Calendar] Could not resolve token for calendar tool {cal_tool.id}")
+            else:
+                logger.warning("[Summary Calendar] No CALENDAR tool found in workspace.")
 
-            # --- Gmail Automatic Post-Call Recap Email Delivery ---
-            gmail_tool = next((t for t in ag.tools if t.tool_type == "GMAIL"), None) if ag.tools else None
-            target_user_id = call.user_id or (ag.user_id if ag else None)
+            # --- 3. GMAIL ---
+            gmail_tool = next((t for t in ag.tools if t.tool_type == "GMAIL"), None) if (ag and ag.tools) else None
+            target_user_id = call_obj.user_id or (ag.user_id if ag else None)
             if not gmail_tool:
-                from app.models.orm import ToolORM
                 tool_res = await session.execute(
                     select(ToolORM).where(ToolORM.tool_type == "GMAIL").order_by(ToolORM.created_at.desc())
                 )
                 gmail_tool = tool_res.scalars().first()
 
             if gmail_tool:
-                meta = call.call_meta or {}
                 recipient = meta.get("captured_email")
                 if not recipient:
                     recipient = await _extract_spoken_email(full_user_speech)
@@ -806,21 +844,31 @@ async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSessio
                     email_match = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', full_user_speech)
                     if email_match:
                         recipient = email_match.group(0)
-                if not recipient and any(w in lower_speech for w in ["mail", "email", "send"]) and target_user_id:
+
+                # Fallback to account user email so the business gets the recap even if caller didn't speak email
+                if not recipient and target_user_id:
                     user_res = await session.execute(select(UserORM).where(UserORM.id == target_user_id))
                     u = user_res.scalar_one_or_none()
                     if u and u.email:
                         recipient = u.email
 
+                if not recipient:
+                    any_user_res = await session.execute(
+                        select(UserORM).where(UserORM.email.isnot(None)).order_by(UserORM.created_at.asc()).limit(1)
+                    )
+                    any_u = any_user_res.scalar_one_or_none()
+                    if any_u and any_u.email:
+                        recipient = any_u.email
+
                 if recipient:
                     gmail_token = await _resolve_tool_token(gmail_tool, session)
                     if gmail_token:
                         from agent.tools.gmail import send_email
-                        mail_subj = f"Appointment Confirmation: {specialty} - {ag.agent_name}"
+                        mail_subj = f"Appointment Confirmation: {specialty} - {agent_name}"
                         mail_body = (
                             f"<div style='font-family: Arial, sans-serif; color: #222; max-width: 600px; line-height: 1.6;'>"
                             f"<p>Hello <b>{cust_name}</b>,</p>"
-                            f"<p>Thank you for speaking with <b>{ag.agent_name}</b>. Here are your confirmed appointment details:</p>"
+                            f"<p>Thank you for speaking with <b>{agent_name}</b>. Here are your confirmed appointment details:</p>"
                             f"<table style='width: 100%; border-collapse: collapse; margin: 16px 0; border: 1px solid #e0e0e0; border-radius: 6px; overflow: hidden;'>"
                             f"<tr style='background-color: #f8f9fa; border-bottom: 1px solid #e0e0e0;'><td style='padding: 10px 14px; color: #666; width: 140px;'><b>Service</b></td><td style='padding: 10px 14px; font-weight: bold;'>{specialty}</td></tr>"
                             f"<tr style='border-bottom: 1px solid #e0e0e0;'><td style='padding: 10px 14px; color: #666;'><b>Scheduled Slot</b></td><td style='padding: 10px 14px; color: #1a73e8; font-weight: bold;'>{slot_text}</td></tr>"
@@ -828,19 +876,22 @@ async def _append_call_summary_to_sheets(call: CallORM, db: Optional[AsyncSessio
                             f"<tr><td style='padding: 10px 14px; color: #666;'><b>Status</b></td><td style='padding: 10px 14px; color: #0d904f; font-weight: bold;'>Confirmed</td></tr>"
                             f"</table>"
                             f"<p>If you have any questions or need to reschedule, simply reply directly to this email.</p>"
-                            f"<br><p>Best regards,<br><b>{ag.agent_name} Team</b></p>"
+                            f"<br><p>Best regards,<br><b>{agent_name} Team</b></p>"
                             f"</div>"
                         )
                         gmail_res = await send_email(gmail_token, recipient, mail_subj, mail_body)
                         logger.info(f"[Summary Gmail] Dispatched post-call recap email to {recipient}: {gmail_res}")
-                        call_obj = await session.get(CallORM, call.id)
-                        if call_obj:
-                            up_meta = dict(call_obj.call_meta or {})
-                            up_meta["gmail_dispatch"] = f"Dispatched to {recipient}: {gmail_res}"
-                            call_obj.call_meta = up_meta
-                            await session.commit()
+                        meta["gmail_dispatch"] = f"Dispatched to {recipient}: {gmail_res}"
+                        call_obj.call_meta = meta
+                        await session.commit()
+                    else:
+                        logger.error(f"[Summary Gmail] Could not resolve token for gmail tool {gmail_tool.id}")
+                else:
+                    logger.warning(f"[Summary Gmail] No recipient email could be resolved for call {call_obj.id}")
+            else:
+                logger.warning("[Summary Gmail] No GMAIL tool found in workspace.")
         except Exception as exc:
-            logger.warning(f"[Summary Sheet] Exception in sheet summary logging: {exc}")
+            logger.error(f"[Summary Sheet] Exception in sheet summary logging: {exc}\n{traceback.format_exc()}")
 
 
 @router.post("/flow")

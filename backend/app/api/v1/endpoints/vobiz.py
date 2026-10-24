@@ -555,8 +555,15 @@ async def vobiz_flow_webhook(
                 "speak to manager", "critical complaint", "human operator"
             ]
         )
+        is_creating_draft = any(
+            phrase in lower_speech for phrase in [
+                "create a draft", "prepare a draft", "draft a quote", "draft a proposal",
+                "draft an estimate", "send me a draft", "prepare an estimate", "custom quote",
+                "custom estimate", "discount proposal", "draft proposal"
+            ]
+        )
 
-        if is_checking_email or is_sending_templated or is_urgent_alert:
+        if is_checking_email or is_sending_templated or is_urgent_alert or is_creating_draft:
             try:
                 gmail_tool = next((t for t in agent.tools if t.tool_type == "GMAIL"), None) if (agent and agent.tools) else None
                 if not gmail_tool:
@@ -617,6 +624,21 @@ async def vobiz_flow_webhook(
                         )
                         logger.info(f"[Vobiz Tools] send_internal_staff_alert result: {alert_res}")
                         tool_context = f"[Live Gmail Action]: Sent urgent escalation alert to on-call staff. Reassure the caller that staff has been notified and will call them back promptly."
+
+                    elif is_creating_draft:
+                        cust_phone, cust_name = _resolve_customer_phone_and_name(call_rec, call_meta, from_num, to_num)
+                        target_email = captured_email or "client@example.com"
+                        from agent.tools.gmail import create_email_draft
+                        draft_res = await create_email_draft(
+                            token=gmail_token,
+                            recipient_email=target_email,
+                            subject=f"Proposal & Estimate for {cust_name}",
+                            draft_body=speech_result,
+                            customer_name=cust_name if cust_name != "Caller" else "",
+                            review_notes=f"Caller requested custom proposal during call with {agent_name} from {cust_phone}",
+                        )
+                        logger.info(f"[Vobiz Tools] create_email_draft result: {draft_res}")
+                        tool_context = f"[Live Gmail Action - create_email_draft]: {draft_res}\nInstruction: Reassure the caller that a proposal draft has been prepared and queued for manager review and approval."
             except Exception as tool_exc:
                 logger.warning(f"[Vobiz Tools] Tool execution failed: {tool_exc}")
 

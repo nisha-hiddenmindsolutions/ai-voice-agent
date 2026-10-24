@@ -52,7 +52,7 @@ async def google_authorize(current_user: UserORM = Depends(get_current_user)):
         "client_id": client_id,
         "redirect_uri": settings.GOOGLE_OAUTH_REDIRECT_URI,
         "response_type": "code",
-        "scope": "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly",
+        "scope": "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.modify",
         "access_type": "offline",
         "prompt": "consent",
         "state": current_user.id # Bind to current authenticated user
@@ -129,7 +129,9 @@ async def google_callback(
                     "https://www.googleapis.com/auth/calendar.events",
                     "https://www.googleapis.com/auth/spreadsheets",
                     "https://www.googleapis.com/auth/gmail.send",
-                    "https://www.googleapis.com/auth/gmail.readonly"
+                    "https://www.googleapis.com/auth/gmail.readonly",
+                    "https://www.googleapis.com/auth/gmail.compose",
+                    "https://www.googleapis.com/auth/gmail.modify"
                 ]
             )
             db.add(integration)
@@ -162,7 +164,9 @@ async def create_service_account_integration(
             "https://www.googleapis.com/auth/calendar.events",
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/gmail.send",
-            "https://www.googleapis.com/auth/gmail.readonly"
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.compose",
+            "https://www.googleapis.com/auth/gmail.modify"
         ],
         access_token="SERVICE_ACCOUNT_MANAGED" # Marker
     )

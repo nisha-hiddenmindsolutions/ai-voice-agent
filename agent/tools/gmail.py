@@ -28,6 +28,7 @@ from .http_client import ToolHTTPError, request_json
 logger = logging.getLogger("agent-tools.gmail")
 
 _GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+_GMAIL_DRAFTS = "https://gmail.googleapis.com/gmail/v1/users/me/drafts"
 _GMAIL_PROFILE = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
 
 
@@ -528,6 +529,103 @@ async def check_recent_email(
 
 
 # ---------------------------------------------------------------------------
+# 5. Create Email Draft (Human-in-the-Loop Review)
+# ---------------------------------------------------------------------------
+async def create_email_draft(
+    token: str,
+    recipient_email: str,
+    subject: str,
+    draft_body: str,
+    customer_name: str = "",
+    review_notes: str = "",
+    staff_email: Optional[str] = None,
+) -> str:
+    """Creates a ready-to-send draft in Gmail for manager review and approval before dispatch."""
+    if not token:
+        return "Failed: No Google authorization token found for Gmail."
+    if not recipient_email:
+        return "Failed: Missing recipient email address for draft."
+
+    recipient = _clean_email(recipient_email)
+    if "@" not in recipient:
+        return f"Failed: Invalid recipient email address '{recipient}'."
+
+    c_name = customer_name.strip() if customer_name else "Valued Client"
+    subj = subject.strip() if subject else f"Proposal & Estimate - {c_name}"
+
+    is_html = any(tag in draft_body.lower() for tag in ("<html", "<p>", "<div", "<table", "<br"))
+    if not is_html:
+        formatted_content = html.escape(draft_body).replace("\n", "<br>")
+        draft_html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; line-height: 1.6; padding: 16px;">
+  <p>Dear {html.escape(c_name)},</p>
+  <div style="margin: 16px 0; padding: 14px 18px; background: #f8fafc; border-left: 4px solid #2563eb; border-radius: 4px;">
+    {formatted_content}
+  </div>
+  <p>Please feel free to reply to this email or call us back if you have any questions or wish to proceed.</p>
+  <p style="margin-top: 24px; color: #64748b; font-size: 13px;">Warm regards,<br><strong style="color: #0f172a;">Customer Solutions Team</strong></p>
+</body>
+</html>"""
+    else:
+        draft_html = draft_body
+
+    try:
+        raw_msg = _create_raw_message(recipient, subj, draft_html)
+        status, data = await request_json(
+            "POST",
+            _GMAIL_DRAFTS,
+            headers=_auth_headers(token),
+            json_body={"message": {"raw": raw_msg}}
+        )
+
+        if status < 300 and isinstance(data, dict):
+            draft_id = data.get("id", "created")
+            logger.info(f"[Gmail] Successfully created draft id={draft_id} for recipient={recipient} subject='{subj}'")
+            return f"Draft email successfully created in Gmail Drafts folder for {recipient} (Subject: '{subj}'). Ready for manager review and approval."
+
+        # Fallback to internal manager review email if draft API has limited scopes
+        logger.warning(f"[Gmail] Draft API returned status {status}: {data}. Falling back to internal manager review email.")
+        target_staff = _clean_email(staff_email) if staff_email else ""
+        if not target_staff:
+            target_staff = await _get_authenticated_user_email(token) or ""
+
+        if target_staff and "@" in target_staff:
+            alert_subj = f"📝 [DRAFT FOR APPROVAL] {subj} (Customer: {recipient})"
+            notes_section = f"<p style='color: #b45309; font-size: 12px; margin-top: 10px;'><strong>Internal Review Notes:</strong> {html.escape(review_notes)}</p>" if review_notes else ""
+            alert_body = f"""<div style="font-family: Arial, sans-serif; padding: 16px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;">
+              <h2 style="color: #1e3a8a; margin-top: 0;">📝 Draft Proposal Pending Approval</h2>
+              <p>A customer requested custom pricing or an estimate during an AI phone call.</p>
+              <table style="width: 100%; border-collapse: collapse; margin-bottom: 16px;">
+                <tr><td style="font-weight: bold; width: 140px;">Customer:</td><td>{html.escape(c_name)} ({recipient})</td></tr>
+                <tr><td style="font-weight: bold;">Proposed Subject:</td><td>{html.escape(subj)}</td></tr>
+              </table>
+              <div style="background: #ffffff; padding: 14px; border: 1px solid #cbd5e1; border-radius: 6px;">
+                <strong>Proposed Content:</strong><br><br>
+                {draft_html}
+              </div>
+              {notes_section}
+              <p style="font-size: 12px; color: #64748b; margin-top: 16px;">Action Required: Please review the proposed terms above and dispatch to the customer upon approval.</p>
+            </div>"""
+            await send_email(token, target_staff, alert_subj, alert_body)
+            return f"Draft proposal prepared and delivered to manager ({target_staff}) for review and approval before sending to {recipient}."
+
+        err_msg = data.get("error", {}).get("message", str(data)) if isinstance(data, dict) else str(data)[:200]
+        return f"Could not create draft via Gmail: {err_msg}"
+
+    except ToolHTTPError as exc:
+        logger.error(f"[Gmail] HTTP exception in create_email_draft: {exc}")
+        return f"Gmail service is temporarily unreachable: {exc}"
+    except Exception as exc:
+        logger.exception(f"[Gmail] Unexpected error in create_email_draft: {exc}")
+        return f"Could not create draft due to an error: {exc}"
+
+
+# ---------------------------------------------------------------------------
 # Tool Builder for LiveKit Agent Function Tools
 # ---------------------------------------------------------------------------
 def build_gmail_tools(t_cfg: dict, name: str, desc: str) -> list:
@@ -721,6 +819,53 @@ def build_gmail_tools(t_cfg: dict, name: str, desc: str) -> list:
             _check_recent,
             name=f"{name}_check_recent_email",
             description="Searches incoming Gmail to verify if an email, document, or prescription sent by the caller has been received."
+        )
+    )
+
+    # 5. Create Email Draft
+    async def _create_draft(
+        recipient_email: Annotated[
+            str,
+            Field(description="The customer or recipient email address to prepare the draft for, e.g. client@example.com.")
+        ],
+        subject: Annotated[
+            str,
+            Field(description="Clear subject line for the draft proposal or estimate.")
+        ],
+        proposed_content: Annotated[
+            str,
+            Field(description="The proposed message body, estimate breakdown, custom pricing, or contract terms discussed on the call.")
+        ],
+        customer_name: Annotated[
+            str,
+            Field(description="Full name of the customer.")
+        ] = "",
+        review_notes: Annotated[
+            str,
+            Field(description="Optional internal notes for the reviewing manager (e.g. 'Caller requested 10% discount on 3BHK' or 'Patient requested customized payment plan').")
+        ] = "",
+        **kwargs: Any
+    ) -> str:
+        """Creates a pending email draft in Gmail for manager review and approval before sending to the customer."""
+        logger.info(f"[GMAIL] {name}_create_email_draft to={recipient_email} subject='{subject}'")
+        if not token:
+            return "Failed: Gmail integration is not connected to a Google Account."
+        return await create_email_draft(
+            token=token,
+            recipient_email=recipient_email,
+            subject=subject,
+            draft_body=proposed_content,
+            customer_name=customer_name,
+            review_notes=review_notes,
+            staff_email=cfg_staff_email,
+        )
+
+    _create_draft.__name__ = f"{name}_create_email_draft"
+    tools.append(
+        function_tool(
+            _create_draft,
+            name=f"{name}_create_email_draft",
+            description="Creates a pending email draft in Gmail for manager review and approval before sending to the customer."
         )
     )
 

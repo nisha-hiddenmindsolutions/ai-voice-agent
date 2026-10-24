@@ -24,6 +24,7 @@ _SHEETS_SUFFIXES = ("_append_row", "_read_rows", "_find_row", "_update_row")
 _GMAIL_SUFFIXES = (
     "_send_email", "_send_templated_email",
     "_send_internal_staff_alert", "_check_recent_email",
+    "_create_email_draft",
 )
 
 
@@ -104,6 +105,7 @@ def build_tools_section(config: Dict[str, Any], tools: List[llm.FunctionTool]) -
             f"- Available email tools: {', '.join(gmail_names)}.\n"
             "- When a caller requests a booking confirmation, information brochure/catalog, office directions, or quotation to be emailed, "
             "confirm their email address and call `_send_templated_email` with the matching template ('confirmation', 'brochure', 'directions', or 'quote').\n"
+            "- When a caller requests a customized discount proposal, price estimate, or complex terms that require manager sign-off, call `_create_email_draft` to prepare a pending draft for human approval.\n"
             "- If a caller asks whether an email, document, prescription, or receipt they sent was received, call `_check_recent_email` to verify.\n"
             "- If a caller has an emergency, asks for an urgent callback from a human supervisor/doctor, or represents a VIP/high-priority deal, "
             "call `_send_internal_staff_alert` immediately with their details.\n"

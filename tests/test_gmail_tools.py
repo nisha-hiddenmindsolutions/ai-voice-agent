@@ -17,6 +17,7 @@ from agent.tools.gmail import (
     send_templated_email,
     send_internal_staff_alert,
     check_recent_email,
+    create_email_draft,
     build_gmail_tools,
 )
 
@@ -101,14 +102,15 @@ class TestGmailTools(unittest.IsolatedAsyncioTestCase):
         }
         tools = build_gmail_tools(t_cfg, "gmail", "Google Gmail tool")
         
-        # Must expand into 4 function tools
-        self.assertEqual(len(tools), 4)
+        # Must expand into 5 function tools
+        self.assertEqual(len(tools), 5)
         tool_names = [t.info.name if hasattr(t, "info") else getattr(t, "name") for t in tools]
         
         self.assertIn("gmail_send_email", tool_names)
         self.assertIn("gmail_send_templated_email", tool_names)
         self.assertIn("gmail_send_internal_staff_alert", tool_names)
         self.assertIn("gmail_check_recent_email", tool_names)
+        self.assertIn("gmail_create_email_draft", tool_names)
 
     async def test_send_templated_email_mocked(self):
         with patch("agent.tools.gmail.request_json", new_callable=AsyncMock) as mock_req:
@@ -171,6 +173,21 @@ class TestGmailTools(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Dental X-Ray Report", result)
             self.assertIn("Sia Patel", result)
             self.assertIn("dental x-ray", result)
+
+    async def test_create_email_draft_mocked(self):
+        with patch("agent.tools.gmail.request_json", new_callable=AsyncMock) as mock_req:
+            mock_req.return_value = (200, {"id": "draft_abc123"})
+
+            result = await create_email_draft(
+                token="valid_token",
+                recipient_email="client@example.com",
+                subject="Special 10% Discount Quotation",
+                draft_body="Proposed 3BHK pricing with 10% spot booking discount.",
+                customer_name="Karan Mehta",
+                review_notes="Approved for today's call only",
+            )
+            self.assertIn("Draft email successfully created in Gmail Drafts folder", result)
+            self.assertIn("client@example.com", result)
 
 
 if __name__ == "__main__":

@@ -858,3 +858,59 @@ async def vobiz_resync_call(
         return {"status": "error", "error": str(exc), "traceback": traceback.format_exc()}
 
 
+@router.post("/switch-agent")
+@router.get("/switch-agent")
+async def switch_vobiz_active_agent(
+    agent: str = "real_estate",
+    db: AsyncSession = Depends(get_db),
+):
+    """Switches the active agent assigned to the Vobiz inbound phone number (+918065354620)."""
+    target_agent = None
+    if "real" in agent.lower() or "estate" in agent.lower() or "aarav" in agent.lower():
+        ag_res = await db.execute(
+            select(AgentORM).options(selectinload(AgentORM.tools)).where(AgentORM.agent_name.ilike("%real estate%")).limit(1)
+        )
+        target_agent = ag_res.scalar_one_or_none()
+    else:
+        ag_res = await db.execute(
+            select(AgentORM).options(selectinload(AgentORM.tools)).where(AgentORM.agent_name.ilike("%maya%")).limit(1)
+        )
+        target_agent = ag_res.scalar_one_or_none()
+
+    if not target_agent:
+        raise HTTPException(status_code=404, detail=f"No agent found matching '{agent}'")
+
+    vobiz_num = "+918065354620"
+    pn_res = await db.execute(
+        select(PhoneNumberORM).where(
+            (PhoneNumberORM.number == vobiz_num) |
+            (PhoneNumberORM.number == "918065354620") |
+            (PhoneNumberORM.number == "+918065354620")
+        )
+    )
+    db_num = pn_res.scalar_one_or_none()
+    if db_num:
+        db_num.agent_id = target_agent.id
+        await db.commit()
+    else:
+        import uuid
+        db_num = PhoneNumberORM(
+            id=str(uuid.uuid4()),
+            number=vobiz_num,
+            provider="vobiz",
+            agent_id=target_agent.id,
+            user_id=target_agent.user_id,
+        )
+        db.add(db_num)
+        await db.commit()
+
+    return {
+        "status": "success",
+        "active_agent_id": target_agent.id,
+        "active_agent_name": target_agent.agent_name,
+        "phone_number": vobiz_num,
+        "first_message": target_agent.config.get("first_message") if isinstance(target_agent.config, dict) else None,
+        "message": f"Inbound phone number {vobiz_num} is now active for {target_agent.agent_name}!",
+    }
+
+

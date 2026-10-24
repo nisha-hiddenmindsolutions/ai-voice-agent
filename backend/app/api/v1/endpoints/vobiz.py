@@ -676,8 +676,8 @@ async def vobiz_resync_call(
     """Manually trigger Google Sheets, Calendar, and Gmail sync for a completed call."""
     import traceback
     try:
-        await _append_call_summary_to_sheets(call_id, db)
-        return {"status": "ok", "message": f"Sync executed for call {call_id}"}
+        res = await _append_call_summary_to_sheets(call_id, db)
+        return {"status": "ok", "message": f"Sync executed for call {call_id}", "details": res}
     except Exception as exc:
         return {"status": "error", "error": str(exc), "traceback": traceback.format_exc()}
 

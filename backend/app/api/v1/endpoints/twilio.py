@@ -764,6 +764,12 @@ async def _append_call_summary_to_sheets(call: Any, db: Optional[AsyncSession] =
 
             from app.services.agent_metadata_service import _resolve_tool_token
             from app.models.orm import ToolORM
+            from sqlalchemy.orm.attributes import flag_modified
+
+            sheets_result = None
+            cal_result = None
+            gmail_result = None
+            recipient_used = None
 
             # --- 1. GOOGLE SHEETS ---
             sheets_tool = next((t for t in ag.tools if t.tool_type == "SHEETS"), None) if (ag and ag.tools) else None
@@ -789,14 +795,17 @@ async def _append_call_summary_to_sheets(call: Any, db: Optional[AsyncSession] =
                             f"Completed ({dur}s)"
                         ]
                         from agent.tools.google_sheets import append_row
-                        res_msg = await append_row(token, spreadsheet_id, range_name, summary_row)
-                        logger.info(f"[Summary Sheet] Appended 1 clean session row for call {call_obj.id}: {res_msg}")
+                        sheets_result = await append_row(token, spreadsheet_id, range_name, summary_row)
+                        logger.info(f"[Summary Sheet] Appended 1 clean session row for call {call_obj.id}: {sheets_result}")
                     else:
-                        logger.error(f"[Summary Sheet] sheets_tool {sheets_tool.id} has no spreadsheetId")
+                        sheets_result = f"Error: sheets_tool {sheets_tool.id} has no spreadsheetId configured"
+                        logger.error(f"[Summary Sheet] {sheets_result}")
                 else:
-                    logger.error(f"[Summary Sheet] Could not resolve token for sheets tool {sheets_tool.id}")
+                    sheets_result = f"Error: could not resolve OAuth token for sheets tool {sheets_tool.id}"
+                    logger.error(f"[Summary Sheet] {sheets_result}")
             else:
-                logger.warning("[Summary Sheet] No SHEETS tool found in workspace.")
+                sheets_result = "Warning: no SHEETS tool found in workspace"
+                logger.warning(f"[Summary Sheet] {sheets_result}")
 
             # --- 2. GOOGLE CALENDAR ---
             cal_tool = next((t for t in ag.tools if t.tool_type == "CALENDAR"), None) if (ag and ag.tools) else None
@@ -820,12 +829,14 @@ async def _append_call_summary_to_sheets(call: Any, db: Optional[AsyncSession] =
                         f"Status: Confirmed via Voice Call"
                     )
                     from agent.tools.google_calendar import schedule_event
-                    cal_res = await schedule_event(cal_token, calendar_id, summary_title, start_time_str, 30, cal_desc)
-                    logger.info(f"[Summary Calendar] Appended Google Calendar event: {cal_res}")
+                    cal_result = await schedule_event(cal_token, calendar_id, summary_title, start_time_str, 30, cal_desc)
+                    logger.info(f"[Summary Calendar] Appended Google Calendar event: {cal_result}")
                 else:
-                    logger.error(f"[Summary Calendar] Could not resolve token for calendar tool {cal_tool.id}")
+                    cal_result = f"Error: could not resolve OAuth token for cal_tool {cal_tool.id}"
+                    logger.error(f"[Summary Calendar] {cal_result}")
             else:
-                logger.warning("[Summary Calendar] No CALENDAR tool found in workspace.")
+                cal_result = "Warning: no CALENDAR tool found in workspace"
+                logger.warning(f"[Summary Calendar] {cal_result}")
 
             # --- 3. GMAIL ---
             gmail_tool = next((t for t in ag.tools if t.tool_type == "GMAIL"), None) if (ag and ag.tools) else None
@@ -860,6 +871,8 @@ async def _append_call_summary_to_sheets(call: Any, db: Optional[AsyncSession] =
                     if any_u and any_u.email:
                         recipient = any_u.email
 
+                recipient_used = recipient
+
                 if recipient:
                     gmail_token = await _resolve_tool_token(gmail_tool, session)
                     if gmail_token:
@@ -879,19 +892,44 @@ async def _append_call_summary_to_sheets(call: Any, db: Optional[AsyncSession] =
                             f"<br><p>Best regards,<br><b>{agent_name} Team</b></p>"
                             f"</div>"
                         )
-                        gmail_res = await send_email(gmail_token, recipient, mail_subj, mail_body)
-                        logger.info(f"[Summary Gmail] Dispatched post-call recap email to {recipient}: {gmail_res}")
-                        meta["gmail_dispatch"] = f"Dispatched to {recipient}: {gmail_res}"
-                        call_obj.call_meta = meta
-                        await session.commit()
+                        gmail_result = await send_email(gmail_token, recipient, mail_subj, mail_body)
+                        logger.info(f"[Summary Gmail] Dispatched post-call recap email to {recipient}: {gmail_result}")
                     else:
-                        logger.error(f"[Summary Gmail] Could not resolve token for gmail tool {gmail_tool.id}")
+                        gmail_result = f"Error: could not resolve OAuth token for gmail tool {gmail_tool.id}"
+                        logger.error(f"[Summary Gmail] {gmail_result}")
                 else:
-                    logger.warning(f"[Summary Gmail] No recipient email could be resolved for call {call_obj.id}")
+                    gmail_result = "Warning: no recipient email could be resolved"
+                    logger.warning(f"[Summary Gmail] {gmail_result} for call {call_obj.id}")
             else:
-                logger.warning("[Summary Gmail] No GMAIL tool found in workspace.")
+                gmail_result = "Warning: no GMAIL tool found in workspace"
+                logger.warning(f"[Summary Gmail] {gmail_result}")
+
+            # Save sync outcome to call metadata
+            meta["sync_results"] = {
+                "sheets": sheets_result,
+                "calendar": cal_result,
+                "gmail": gmail_result,
+                "recipient": recipient_used,
+            }
+            call_obj.call_meta = meta
+            flag_modified(call_obj, "call_meta")
+            await session.commit()
+
+            return {
+                "call_id": call_obj.id,
+                "agent_name": agent_name,
+                "customer_name": cust_name,
+                "specialty": specialty,
+                "slot_text": slot_text,
+                "sheets": sheets_result,
+                "calendar": cal_result,
+                "gmail": gmail_result,
+                "recipient": recipient_used,
+            }
         except Exception as exc:
-            logger.error(f"[Summary Sheet] Exception in sheet summary logging: {exc}\n{traceback.format_exc()}")
+            err_msg = f"Exception in sheet summary logging: {exc}\n{traceback.format_exc()}"
+            logger.error(f"[Summary Sheet] {err_msg}")
+            return {"error": err_msg}
 
 
 @router.post("/flow")

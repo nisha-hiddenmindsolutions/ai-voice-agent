@@ -810,6 +810,23 @@ async def vobiz_diagnostic(
                     from agent.tools.google_sheets import read_rows
                     sheet_sample = await read_rows(tok, t.config.get("spreadsheetId"), "A42:G46")
 
+        # 4. Agents & Phone Numbers
+        ag_res = await db.execute(select(AgentORM).options(selectinload(AgentORM.tools)).order_by(AgentORM.created_at.desc()))
+        agents = ag_res.scalars().all()
+        agents_data = []
+        for ag in agents:
+            agents_data.append({
+                "id": ag.id,
+                "name": ag.agent_name,
+                "status": ag.status,
+                "tools": [t.name for t in (ag.tools or [])],
+                "first_message": ag.config.get("first_message") if isinstance(ag.config, dict) else None,
+            })
+
+        pn_res = await db.execute(select(PhoneNumberORM).order_by(PhoneNumberORM.created_at.desc()))
+        pns = pn_res.scalars().all()
+        pns_data = [{"number": p.number, "agent_id": p.agent_id} for p in pns]
+
         return {
             "google_client_id_configured": bool(settings.GOOGLE_CLIENT_ID),
             "google_client_secret_configured": bool(settings.GOOGLE_CLIENT_SECRET),
@@ -817,6 +834,8 @@ async def vobiz_diagnostic(
             "calls": calls_data,
             "integrations": ints_data,
             "tools": tools_data,
+            "agents": agents_data,
+            "phone_numbers": pns_data,
         }
     except Exception as exc:
         return {

@@ -65,6 +65,59 @@ def _xml_escape(val: Any) -> str:
     )
 
 
+def _resolve_customer_phone_and_name(
+    call_rec: Optional[CallORM],
+    call_meta: dict,
+    from_num: str,
+    to_num: str
+) -> tuple[str, str]:
+    """
+    Resolves the actual human customer's phone number and name based on call direction.
+    Prevents the agent's virtual DID number (+918065354620) from appearing as the caller name or phone.
+    """
+    vobiz_did_numbers = ("+918065354620", "918065354620", "8065354620")
+
+    # 1. Resolve Customer Phone Number
+    customer_phone = None
+    if call_rec:
+        dir_val = str(getattr(call_rec.direction, "value", call_rec.direction)).lower()
+        if dir_val == "outbound":
+            customer_phone = call_rec.to_number
+        else:
+            customer_phone = call_rec.from_number
+
+    if not customer_phone or customer_phone in vobiz_did_numbers or customer_phone == "Unknown":
+        if to_num and to_num not in vobiz_did_numbers and to_num != "Unknown":
+            customer_phone = to_num
+        elif from_num and from_num not in vobiz_did_numbers and from_num != "Unknown":
+            customer_phone = from_num
+        elif call_rec and call_rec.to_number:
+            customer_phone = call_rec.to_number
+
+    # 2. Resolve Customer Name
+    customer_name = call_meta.get("patient_name") or call_meta.get("customer_name")
+    if not customer_name or re.search(r'\d{6,}', str(customer_name)):
+        conv = call_meta.get("conversation_history") or []
+        for turn in reversed(conv):
+            c = turn.get("content", "")
+            m = re.search(
+                r'(?:noted your name as|name is|name will be|call me|email from)\s+([A-Za-z\s]{2,30})',
+                c,
+                re.I
+            )
+            if m:
+                cand = m.group(1).strip()
+                cand = re.sub(r'\s+(?:please|and|my|what|is|so|for|with|the|to).*$', '', cand, flags=re.I).strip()
+                if len(cand) >= 2 and not any(w in cand.lower() for w in ["yes", "hello", "doctor", "appointment", "clinic", "today", "tomorrow"]):
+                    customer_name = cand.title()
+                    break
+
+    if not customer_name or re.search(r'\d{6,}', str(customer_name)):
+        customer_name = "Caller"
+
+    return str(customer_phone or "Unknown"), str(customer_name)
+
+
 class VobizOutboundRequest(BaseModel):
     to_number: str
     from_number: Optional[str] = None
@@ -531,6 +584,7 @@ async def vobiz_flow_webhook(
                         tool_context = f"[Live Gmail Inbox Check]:\n{lookup}\nInstruction: You checked the inbox live and found this result. Warmly confirm receipt of their email/document to the caller with the details found."
 
                     elif is_sending_templated and captured_email:
+                        cust_phone, cust_name = _resolve_customer_phone_and_name(call_rec, call_meta, from_num, to_num)
                         tmpl = "confirmation"
                         if "brochure" in lower_speech or "catalog" in lower_speech:
                             tmpl = "brochure"
@@ -543,7 +597,7 @@ async def vobiz_flow_webhook(
                             token=gmail_token,
                             recipient=captured_email,
                             template_type=tmpl,
-                            customer_name=call_meta.get("patient_name") or call_meta.get("customer_name") or "",
+                            customer_name=cust_name if cust_name != "Caller" else "",
                             service_or_item=call_meta.get("specialty") or call_meta.get("service") or "",
                             scheduled_time_or_slot=call_meta.get("slot") or "",
                         )
@@ -551,12 +605,13 @@ async def vobiz_flow_webhook(
                         tool_context = f"[Live Gmail Action]: Dispatched {tmpl} pass to {captured_email}. Confirm to caller that it was dispatched."
 
                     elif is_urgent_alert:
+                        cust_phone, cust_name = _resolve_customer_phone_and_name(call_rec, call_meta, from_num, to_num)
                         from agent.tools.gmail import send_internal_staff_alert
                         alert_res = await send_internal_staff_alert(
                             token=gmail_token,
                             alert_type="urgent_callback",
-                            caller_name=call_meta.get("patient_name") or call_meta.get("customer_name") or from_num,
-                            caller_phone=from_num,
+                            caller_name=cust_name,
+                            caller_phone=cust_phone,
                             reason=speech_result,
                             urgency_level="urgent",
                         )

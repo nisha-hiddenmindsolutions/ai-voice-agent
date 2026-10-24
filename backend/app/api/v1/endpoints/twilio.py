@@ -34,6 +34,7 @@ import hmac
 import hashlib
 import base64
 import logging
+import re
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode, quote
@@ -631,6 +632,7 @@ def _extract_clean_slot(text: str) -> tuple[str, int, int, int]:
     Extracts a clean, short slot (e.g. 'Tomorrow at 4:00 PM') and schedule time components.
     Returns: (slot_display_str, day_offset, hour_24, minute)
     """
+    import re
     if not text:
         return "As requested on call", 1, 11, 0
 

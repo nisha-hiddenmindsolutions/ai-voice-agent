@@ -660,7 +660,7 @@ async def vobiz_diagnostic(
                 tok = await _resolve_tool_token(t, db)
                 if tok:
                     from agent.tools.google_sheets import read_rows
-                    sheet_sample = await read_rows(tok, t.config.get("spreadsheetId"), "A1:Z5")
+                    sheet_sample = await read_rows(tok, t.config.get("spreadsheetId"), "A42:G46")
 
         return {
             "google_client_id_configured": bool(settings.GOOGLE_CLIENT_ID),

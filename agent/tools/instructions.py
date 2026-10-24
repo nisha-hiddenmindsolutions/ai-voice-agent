@@ -21,6 +21,10 @@ _CALENDAR_SUFFIXES = (
     "_cancel_event", "_reschedule_event",
 )
 _SHEETS_SUFFIXES = ("_append_row", "_read_rows", "_find_row", "_update_row")
+_GMAIL_SUFFIXES = (
+    "_send_email", "_send_templated_email",
+    "_send_internal_staff_alert", "_check_recent_email",
+)
 
 
 def _tool_name(t: llm.FunctionTool) -> str:
@@ -35,7 +39,11 @@ def build_tools_section(config: Dict[str, Any], tools: List[llm.FunctionTool]) -
     has_rag = "rag_system" in names
     calendar_names = [n for n in names if any(n.endswith(suf) for suf in _CALENDAR_SUFFIXES)]
     sheets_names = [n for n in names if any(n.endswith(suf) for suf in _SHEETS_SUFFIXES)]
-    other_names = [n for n in names if n not in calendar_names and n not in sheets_names and n != "rag_system"]
+    gmail_names = [n for n in names if any(n.endswith(suf) for suf in _GMAIL_SUFFIXES)]
+    other_names = [
+        n for n in names
+        if n not in calendar_names and n not in sheets_names and n not in gmail_names and n != "rag_system"
+    ]
 
     parts = ["\n\n--- TOOL USE ---"]
     parts.append(
@@ -88,6 +96,18 @@ def build_tools_section(config: Dict[str, Any], tools: List[llm.FunctionTool]) -
             "row number.\n"
             "- Use `_read_rows` only when the user is actually asking to hear back existing data — do not read "
             "the whole sheet speculatively."
+        )
+
+    if gmail_names:
+        parts.append(
+            "\nGMAIL & EMAIL:\n"
+            f"- Available email tools: {', '.join(gmail_names)}.\n"
+            "- When a caller requests a booking confirmation, information brochure/catalog, office directions, or quotation to be emailed, "
+            "confirm their email address and call `_send_templated_email` with the matching template ('confirmation', 'brochure', 'directions', or 'quote').\n"
+            "- If a caller asks whether an email, document, prescription, or receipt they sent was received, call `_check_recent_email` to verify.\n"
+            "- If a caller has an emergency, asks for an urgent callback from a human supervisor/doctor, or represents a VIP/high-priority deal, "
+            "call `_send_internal_staff_alert` immediately with their details.\n"
+            "- For any other custom message requested by the caller, call `_send_email`."
         )
 
     if other_names:

@@ -27,7 +27,7 @@ logger = logging.getLogger("agent-tools.registry")
 _DEFAULT_DESCRIPTIONS = {
     "CALENDAR": "Schedule meetings, appointments, or events on Google Calendar.",
     "SHEETS": "Log data, leads, or notes into a Google Sheets spreadsheet.",
-    "GMAIL": "Compose and send emails to callers or specified email addresses.",
+    "GMAIL": "Send confirmations, branded templates, staff alerts, and search incoming customer emails via Gmail.",
 }
 
 # Tool types that expand into MULTIPLE named FunctionTools (return a list).

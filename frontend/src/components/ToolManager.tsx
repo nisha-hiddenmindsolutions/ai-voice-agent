@@ -487,8 +487,8 @@ export const ToolManager: React.FC = () => {
                           tool_type: 'GMAIL',
                           category: 'Google Apps',
                           method: 'NATIVE',
-                          name: 'Gmail Email Sender',
-                          description: 'Composes and sends custom emails or post-call recaps via Gmail.'
+                          name: 'Gmail Assistant Suite',
+                          description: 'Sends confirmation templates, brochure info, office directions, staff alerts, and searches received emails.'
                         });
                         setCreationStep('config');
                     }}
@@ -497,7 +497,7 @@ export const ToolManager: React.FC = () => {
                     <div className="w-10 h-10 rounded-lg bg-[var(--surface)] flex items-center justify-center border border-[var(--border)]"><GoogleGmailIcon size={20} /></div>
                     <div>
                       <h4 className="text-xs font-bold text-[var(--text-primary)]">Google Gmail</h4>
-                      <p className="text-[10px] text-[var(--text-muted)] mt-0.5">Send custom emails & post-call recaps</p>
+                      <p className="text-[10px] text-[var(--text-muted)] mt-0.5">Send templates, alerts & verify emails</p>
                     </div>
                   </button>
                 </div>
@@ -737,7 +737,7 @@ export const ToolManager: React.FC = () => {
                       <div className="p-3 bg-[var(--surface-secondary)] border border-[var(--border)] rounded-xl space-y-1">
                         <span className="text-[9px] font-bold text-[var(--primary)] uppercase tracking-wider block">GMAIL API INTEGRATION</span>
                         <p className="text-[9px] text-[var(--text-secondary)] leading-relaxed font-medium">
-                          Empowers the voice agent to compose and send custom emails during calls or dispatch automated recap summaries upon call completion.
+                          Empowers voice agents to dispatch branded confirmation templates, send urgent escalation alerts to staff, verify received emails, or compose custom messages during calls.
                         </p>
                       </div>
 

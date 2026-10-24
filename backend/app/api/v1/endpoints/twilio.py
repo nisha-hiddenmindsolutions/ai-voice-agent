@@ -887,17 +887,28 @@ async def _append_call_summary_to_sheets(call: Any, db: Optional[AsyncSession] =
                     if spreadsheet_id:
                         range_name = sheets_tool.config.get("range", "A1") or "A1"
                         dur = int(call_obj.duration_seconds or 0)
+
+                        # Build formatted full conversation transcript for Google Sheets
+                        conversation_lines = []
+                        for turn in conv_history:
+                            role = "Caller" if turn.get("role") == "user" else agent_name
+                            text = (turn.get("content") or "").strip()
+                            if text:
+                                conversation_lines.append(f"{role}: {text}")
+                        full_convo_str = "\n".join(conversation_lines) if conversation_lines else full_user_speech
+
                         summary_row = [
                             now_str,
                             cust_name,
                             phone_num,
                             specialty,
                             slot_text,
+                            full_convo_str,
                             f"Completed ({dur}s)"
                         ]
                         from agent.tools.google_sheets import append_row
                         sheets_result = await append_row(token, spreadsheet_id, range_name, summary_row)
-                        logger.info(f"[Summary Sheet] Appended 1 clean session row for call {call_obj.id}: {sheets_result}")
+                        logger.info(f"[Summary Sheet] Appended 1 clean session row with full conversation for call {call_obj.id}: {sheets_result}")
                     else:
                         sheets_result = f"Error: sheets_tool {sheets_tool.id} has no spreadsheetId configured"
                         logger.error(f"[Summary Sheet] {sheets_result}")

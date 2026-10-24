@@ -684,6 +684,115 @@ def _extract_clean_slot(text: str) -> tuple[str, int, int, int]:
     return slot_display, day_offset, hour, minute
 
 
+async def _extract_call_summary_details(
+    agent_name: str,
+    full_user_speech: str,
+    conversation_history: List[Dict[str, str]],
+) -> tuple[str, str, str, str]:
+    """
+    Intelligently extracts (customer_name, service_topic, slot_text, clean_email)
+    from the phone conversation using fast LLM extraction (qwen/qwen3.8-27b ~150ms)
+    with agent-domain-aware heuristic fallbacks.
+    """
+    import json
+    cust_name = "Caller"
+    specialty = f"{agent_name} Consultation"
+    slot_text = "As requested on call"
+    email_extracted = ""
+
+    # 1. Ultra-fast Groq LLM extraction (150ms)
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    if groq_key and conversation_history:
+        try:
+            prompt = (
+                f"You are an expert booking assistant analyzing a conversation between an AI Voice Agent ('{agent_name}') and a caller.\n"
+                "Extract the final confirmed appointment / booking details:\n"
+                "1. customer_name: The actual caller or patient's first/full name (e.g. 'Sia', 'Nisha'). Do NOT include prefixes like 'Patient' or 'Name'.\n"
+                "2. service: The actual service, inquiry, or topic confirmed in this call (e.g. 'Dental Care', 'Real Estate Site Visit', 'Order Support'). If the agent is a clinic/medical receptionist, keep it medical! If real estate, keep it real estate.\n"
+                "3. slot: The confirmed date and time slot (e.g. 'Tomorrow at 4:00 PM', 'Tomorrow at 7:00 AM').\n"
+                "4. email: The recipient email address if mentioned.\n\n"
+                f"Transcript:\n{json.dumps(conversation_history[-10:], indent=2)}\n\n"
+                "Respond with valid JSON ONLY:\n"
+                '{"customer_name": "...", "service": "...", "slot": "...", "email": "..."}'
+            )
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {groq_key}"},
+                    json={
+                        "model": "qwen/qwen3.8-27b",
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.1,
+                        "response_format": {"type": "json_object"}
+                    }
+                )
+                if resp.status_code == 200:
+                    data = resp.json()["choices"][0]["message"]["content"]
+                    parsed = json.loads(data)
+                    c_name = parsed.get("customer_name", "").strip().title()
+                    c_name = re.sub(r'\b(Patient|Name|Full|Mr|Mrs|Ms|Doctor)\b', '', c_name, flags=re.IGNORECASE).strip()
+                    if c_name and len(c_name) > 1:
+                        cust_name = c_name
+
+                    c_service = parsed.get("service", "").strip()
+                    if c_service:
+                        specialty = c_service
+
+                    c_slot = parsed.get("slot", "").strip()
+                    if c_slot:
+                        slot_text = c_slot
+
+                    c_email = parsed.get("email", "").strip()
+                    if c_email and "@" in c_email:
+                        email_extracted = c_email
+
+                    logger.info(f"[Summary Extraction] LLM resolved: Name='{cust_name}', Service='{specialty}', Slot='{slot_text}', Email='{email_extracted}'")
+                    return cust_name, specialty, slot_text, email_extracted
+        except Exception as exc:
+            logger.warning(f"[Summary Extraction] Groq extraction error, falling back to heuristics: {exc}")
+
+    # 2. Heuristic Fallback (Agent Domain Aware)
+    lower_speech = full_user_speech.lower()
+    lower_agent = agent_name.lower()
+
+    if any(k in lower_agent for k in ["maya", "clinic", "health", "doctor", "hospital", "patient"]):
+        specialty = "Clinic Consultation"
+        if any(w in lower_speech for w in ["dent", "teeth", "tooth"]):
+            specialty = "Dental Care"
+        elif any(w in lower_speech for w in ["cardiol", "heart"]):
+            specialty = "Cardiology"
+        elif any(w in lower_speech for w in ["derma", "skin"]):
+            specialty = "Dermatology"
+        elif any(w in lower_speech for w in ["general", "checkup", "fever", "cough"]):
+            specialty = "General Medical Checkup"
+    elif any(k in lower_agent for k in ["real estate", "property", "estate", "housing"]):
+        specialty = "Real Estate Site Visit"
+    elif any(k in lower_agent for k in ["ecommerce", "e-commerce", "store", "shop"]):
+        specialty = "E-Commerce Order & Support"
+    else:
+        if any(w in lower_speech for w in ["property", "flat", "apartment", "bhk", "villa", "site visit"]):
+            specialty = "Real Estate Site Visit"
+        elif any(w in lower_speech for w in ["order", "delivery", "shipping", "refund", "return", "cart"]):
+            specialty = "E-Commerce Order & Support"
+        elif any(w in lower_speech for w in ["dent", "teeth", "tooth"]):
+            specialty = "Dental Care"
+
+    name_match = re.search(r'(?:my full name is|full name is|my name is|patient name is|name is|i am|this is)\s+([a-zA-Z]+)(?:\s+([a-zA-Z]+))?(?:\s+and\b|\s+my\b|\s+i\s+|\.|\,|$)', full_user_speech, re.IGNORECASE)
+    if name_match:
+        part1 = name_match.group(1).strip().title()
+        part2 = name_match.group(2).strip().title() if name_match.group(2) else ""
+        raw_n = f"{part1} {part2}".strip()
+        raw_n = re.sub(r'\b(Patient|Name|Full|Caller)\b', '', raw_n, flags=re.IGNORECASE).strip()
+        if raw_n:
+            cust_name = raw_n
+
+    slot_heur, _, _, _ = _extract_clean_slot(full_user_speech)
+    if slot_heur:
+        slot_text = slot_heur
+
+    return cust_name, specialty, slot_text, email_extracted
+
+
 async def _append_call_summary_to_sheets(call: Any, db: Optional[AsyncSession] = None):
     """Appends EXACTLY 1 clean summary lead row per call session upon call completion."""
     from app.db.session import AsyncSessionLocal
@@ -731,35 +840,16 @@ async def _append_call_summary_to_sheets(call: Any, db: Optional[AsyncSession] =
                 full_user_speech = "Voice call appointment consultation"
                 logger.info(f"[Summary] Using fallback speech description for call {call_id}")
 
-            # Parse Patient Name
-            import re
-            name_match = re.search(r'(?:my full name is|full name is|my name is|name is|i am|this is)\s+([a-zA-Z\s]+?)(?:\s+and|\s+i|\s+my|\.|$)', full_user_speech, re.IGNORECASE)
-            cust_name = name_match.group(1).strip().title() if name_match else "Caller"
+            # Intelligently extract verified booking details using Groq LLM + domain fallbacks
+            conv_history = meta.get("conversation_history") or []
+            cust_name, specialty, slot_text, llm_email = await _extract_call_summary_details(
+                agent_name=agent_name,
+                full_user_speech=full_user_speech,
+                conversation_history=conv_history,
+            )
 
-            # Parse Service / Inquiry Topic
-            specialty = f"{agent_name} Consultation"
-            lower_speech = full_user_speech.lower()
-            if any(w in lower_speech for w in ["property", "flat", "apartment", "bhk", "villa", "real estate", "site visit"]):
-                specialty = "Real Estate Site Visit"
-            elif any(w in lower_speech for w in ["order", "product", "delivery", "shipping", "refund", "return", "cart", "ecommerce", "e-commerce", "exchange", "tracking", "item", "purchase"]):
-                specialty = "E-Commerce Order & Customer Support"
-            elif any(w in lower_speech for w in ["demo", "software", "saas", "tech", "platform", "cloud"]):
-                specialty = "Product Demo & Tech Discussion"
-            elif any(w in lower_speech for w in ["car", "drive", "test drive", "vehicle", "automobile"]):
-                specialty = "Test Drive Booking"
-            elif any(w in lower_speech for w in ["dent", "teeth", "tooth"]):
-                specialty = "Dental Care"
-            elif any(w in lower_speech for w in ["cardiol", "heart"]):
-                specialty = "Cardiology"
-            elif any(w in lower_speech for w in ["legal", "lawyer", "law"]):
-                specialty = "Legal Consultation"
-            elif any(w in lower_speech for w in ["finance", "tax", "loan", "investment"]):
-                specialty = "Financial Advisory"
-            elif any(w in lower_speech for w in ["general", "consult", "meeting", "checkup"]):
-                specialty = "Client Consultation"
-
-            # Parse Slot / Date requested cleanly (e.g. 'Tomorrow at 4:00 PM')
-            slot_text, day_offset, sched_hour, sched_minute = _extract_clean_slot(full_user_speech)
+            # Compute day_offset and time components for Google Calendar
+            _, day_offset, sched_hour, sched_minute = _extract_clean_slot(slot_text or full_user_speech)
 
             now_str = (call_obj.started_at or datetime.utcnow()).strftime("%Y-%m-%d %H:%M:%S")
             phone_num = call_obj.to_number or call_obj.from_number or "Unknown"
@@ -850,7 +940,9 @@ async def _append_call_summary_to_sheets(call: Any, db: Optional[AsyncSession] =
                 gmail_tool = tool_res.scalars().first()
 
             if gmail_tool:
-                recipient = meta.get("captured_email")
+                recipient = meta.get("captured_email") or (llm_email if ("@" in llm_email) else None)
+                if not recipient and llm_email:
+                    recipient = await _extract_spoken_email(llm_email)
                 if not recipient:
                     recipient = await _extract_spoken_email(full_user_speech)
                 if not recipient:

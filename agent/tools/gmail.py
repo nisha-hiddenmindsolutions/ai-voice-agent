@@ -457,6 +457,33 @@ async def check_recent_email(
             return f"Could not check emails via Gmail: {err_msg}"
 
         messages = data.get("messages", []) if isinstance(data, dict) else []
+        if not messages and (search_query or sender):
+            # Fallback 1: Try searching by query keyword (e.g. "prescription", "report")
+            # in case speech-to-text had minor phonetic variations for the caller's email address
+            fallback_terms = []
+            if search_query:
+                fallback_terms.append(search_query.strip())
+            elif sender:
+                uname = sender.split("@")[0]
+                base_uname = re.sub(r'\d+$', '', uname)
+                if len(base_uname) >= 4:
+                    fallback_terms.append(base_uname)
+
+            if fallback_terms:
+                fallback_q = " ".join(fallback_terms)
+                logger.info(f"[Gmail] No direct match for '{q}'. Attempting fallback search: '{fallback_q}'")
+                try:
+                    fb_status, fb_data = await request_json(
+                        "GET",
+                        _GMAIL_BASE,
+                        headers=_auth_headers(token),
+                        params={"q": fallback_q, "maxResults": max_results}
+                    )
+                    if fb_status < 300 and isinstance(fb_data, dict):
+                        messages = fb_data.get("messages", [])
+                except Exception as fb_exc:
+                    logger.warning(f"[Gmail] Fallback search failed: {fb_exc}")
+
         if not messages:
             target_desc = f"from '{sender}'" if sender else f"matching '{search_query}'"
             return f"No recent emails found {target_desc} in the inbox."

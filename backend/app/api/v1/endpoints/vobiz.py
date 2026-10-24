@@ -38,7 +38,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
-from app.models.orm import UserORM, AgentORM, CallORM, CallDirection, PhoneNumberORM
+from app.models.orm import UserORM, AgentORM, CallORM, CallDirection, PhoneNumberORM, ToolORM
+from app.services.agent_metadata_service import _resolve_tool_token
 from app.api.v1.endpoints.twilio import (
     _generate_groq_llm_reply,
     _extract_spoken_email,
@@ -473,6 +474,97 @@ async def vobiz_flow_webhook(
 </Response>"""
             return Response(content=vobiz_xml, media_type="text/xml")
 
+        # 6a. Check for Live Gmail & Tool Intents
+        tool_context = None
+        is_checking_email = any(
+            phrase in lower_speech for phrase in [
+                "did you get", "did you receive", "do you see", "check if you received",
+                "check my email", "sent an email", "sent my email", "sent a mail", "sent email",
+                "sent the prescription", "sent my prescription", "receive my mail", "receive the mail",
+                "received my email", "got my email", "got my mail", "have you received", "check recent"
+            ]
+        ) or (
+            ("email" in lower_speech or "mail" in lower_speech) and
+            ("sent" in lower_speech or "received" in lower_speech or "check" in lower_speech or "see" in lower_speech)
+        )
+        is_sending_templated = any(
+            phrase in lower_speech for phrase in [
+                "email me the confirmation", "send me the confirmation", "send confirmation pass",
+                "email me the brochure", "send me the brochure", "send the brochure",
+                "email me the directions", "send me the directions", "send location",
+                "email me the quote", "send me the quote", "send pricing"
+            ]
+        )
+        is_urgent_alert = any(
+            phrase in lower_speech for phrase in [
+                "urgent", "emergency", "call me back immediately", "have a doctor call me",
+                "have a manager call me", "talk to human", "speak to human", "speak to a person",
+                "speak to manager", "critical complaint", "human operator"
+            ]
+        )
+
+        if is_checking_email or is_sending_templated or is_urgent_alert:
+            try:
+                gmail_tool = next((t for t in agent.tools if t.tool_type == "GMAIL"), None) if (agent and agent.tools) else None
+                if not gmail_tool:
+                    tool_res = await db.execute(
+                        select(ToolORM).where(ToolORM.tool_type == "GMAIL").order_by(ToolORM.created_at.desc())
+                    )
+                    gmail_tool = tool_res.scalars().first()
+
+                gmail_token = await _resolve_tool_token(gmail_tool, db) if gmail_tool else None
+                if gmail_token:
+                    if is_checking_email:
+                        kw = ""
+                        for cand_kw in ["prescription", "report", "document", "test", "kyc", "3bhk", "flat", "offer", "invoice", "receipt", "agreement"]:
+                            if cand_kw in lower_speech:
+                                kw = cand_kw
+                                break
+                        from agent.tools.gmail import check_recent_email
+                        lookup = await check_recent_email(
+                            token=gmail_token,
+                            sender_email=captured_email or "",
+                            search_query=kw,
+                            max_results=3
+                        )
+                        logger.info(f"[Vobiz Tools] check_recent_email result: {lookup}")
+                        tool_context = f"[Live Gmail Inbox Check]:\n{lookup}\nInstruction: You checked the inbox live and found this result. Warmly confirm receipt of their email/document to the caller with the details found."
+
+                    elif is_sending_templated and captured_email:
+                        tmpl = "confirmation"
+                        if "brochure" in lower_speech or "catalog" in lower_speech:
+                            tmpl = "brochure"
+                        elif "direction" in lower_speech or "location" in lower_speech:
+                            tmpl = "directions"
+                        elif "quote" in lower_speech or "price" in lower_speech:
+                            tmpl = "quote"
+                        from agent.tools.gmail import send_templated_email
+                        send_res = await send_templated_email(
+                            token=gmail_token,
+                            recipient=captured_email,
+                            template_type=tmpl,
+                            customer_name=call_meta.get("patient_name") or call_meta.get("customer_name") or "",
+                            service_or_item=call_meta.get("specialty") or call_meta.get("service") or "",
+                            scheduled_time_or_slot=call_meta.get("slot") or "",
+                        )
+                        logger.info(f"[Vobiz Tools] send_templated_email result: {send_res}")
+                        tool_context = f"[Live Gmail Action]: Dispatched {tmpl} pass to {captured_email}. Confirm to caller that it was dispatched."
+
+                    elif is_urgent_alert:
+                        from agent.tools.gmail import send_internal_staff_alert
+                        alert_res = await send_internal_staff_alert(
+                            token=gmail_token,
+                            alert_type="urgent_callback",
+                            caller_name=call_meta.get("patient_name") or call_meta.get("customer_name") or from_num,
+                            caller_phone=from_num,
+                            reason=speech_result,
+                            urgency_level="urgent",
+                        )
+                        logger.info(f"[Vobiz Tools] send_internal_staff_alert result: {alert_res}")
+                        tool_context = f"[Live Gmail Action]: Sent urgent escalation alert to on-call staff. Reassure the caller that staff has been notified and will call them back promptly."
+            except Exception as tool_exc:
+                logger.warning(f"[Vobiz Tools] Tool execution failed: {tool_exc}")
+
         # Generate AI response via Groq / OpenRouter
         reply, latency = await _generate_groq_llm_reply(
             agent_name=agent_name,
@@ -480,6 +572,7 @@ async def vobiz_flow_webhook(
             user_speech=speech_result,
             conversation_history=conversation_history,
             captured_email=captured_email,
+            tool_context=tool_context,
         )
 
         if not reply:
@@ -504,10 +597,10 @@ async def vobiz_flow_webhook(
 
         vobiz_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Gather action="{safe_action_url}" method="POST" inputType="speech" executionTimeout="8">
+    <Gather action="{safe_action_url}" method="POST" inputType="speech" executionTimeout="10">
         <Speak voice="Polly.Aditi" language="en-IN">{safe_reply}</Speak>
     </Gather>
-    <Gather action="{safe_action_url}" method="POST" inputType="speech" executionTimeout="8">
+    <Gather action="{safe_action_url}" method="POST" inputType="speech" executionTimeout="10">
         <Speak voice="Polly.Aditi" language="en-IN">Is there anything else I can assist you with today?</Speak>
     </Gather>
     <Speak voice="Polly.Aditi" language="en-IN">Thank you for speaking with {safe_agent_name}. Goodbye!</Speak>

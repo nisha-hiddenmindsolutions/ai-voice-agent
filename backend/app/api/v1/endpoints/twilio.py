@@ -450,22 +450,37 @@ def _normalize_spoken_email_heuristics(text: str) -> Optional[str]:
         left = parts[0].strip()
         right = parts[1].strip()
 
-        left = re.sub(r'^(.*?)(?:email(?: id| address)? is|mail is|it is|send to)\s*', '', left).strip()
+        left = re.sub(r'^(.*?)(?:email(?: id| address)? is|mail is|it is|send to|from|address|account|my email|my mail)\s*', '', left).strip()
+        words = left.split()
+        if len(words) > 3:
+            for marker in ['from', 'is', 'email', 'id', 'at']:
+                if marker in words:
+                    idx = len(words) - 1 - words[::-1].index(marker)
+                    words = words[idx+1:]
+                    break
+            else:
+                words = words[-3:]
+            left = " ".join(words)
+
         left = re.sub(r'(?<=\b[a-z0-9])\s+(?=[a-z0-9]\b)', '', left)
         left = re.sub(r'\s+', '', left)
         left = re.sub(r'^[^\w]+|[^\w]+$', '', left)
 
-        right = re.sub(r'\s+', '', right)
-        right = re.sub(r'[^\w.]+$', '', right)
-        if not any(right.endswith(ext) for ext in ['.com', '.in', '.org', '.net', '.io', '.co']):
-            if 'gmail' in right:
-                right = 'gmail.com'
-            elif 'yahoo' in right:
-                right = 'yahoo.com'
-            elif 'outlook' in right:
-                right = 'outlook.com'
-            elif 'hotmail' in right:
-                right = 'hotmail.com'
+        m_dom = re.search(r'([a-zA-Z0-9-]+\.(?:com|in|org|net|io|co))', right)
+        if m_dom:
+            right = m_dom.group(1)
+        else:
+            right = re.sub(r'\s+', '', right)
+            right = re.sub(r'[^\w.]+$', '', right)
+            if not any(right.endswith(ext) for ext in ['.com', '.in', '.org', '.net', '.io', '.co']):
+                if 'gmail' in right:
+                    right = 'gmail.com'
+                elif 'yahoo' in right:
+                    right = 'yahoo.com'
+                elif 'outlook' in right:
+                    right = 'outlook.com'
+                elif 'hotmail' in right:
+                    right = 'hotmail.com'
 
         candidate = f"{left}@{right}"
         if re.match(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', candidate):
@@ -548,7 +563,8 @@ async def _generate_groq_llm_reply(
     sys_prompt: str,
     user_speech: str,
     conversation_history: Optional[List[Dict[str, str]]] = None,
-    captured_email: Optional[str] = None
+    captured_email: Optional[str] = None,
+    tool_context: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[int]]:
     """Generates an ultra-fast dynamic real-time AI response using Groq (qwen/qwen3.8-27b) with sub-200ms execution."""
     t0 = time.perf_counter()
@@ -577,13 +593,19 @@ async def _generate_groq_llm_reply(
         system_content = (
             f"You are {agent_name}. {sys_prompt}\n"
             f"Call context:{email_ctx}\n"
+            "Live Tool & Integration Capabilities:\n"
+            "- You ARE directly connected to the clinic/business Google Workspace (Google Gmail, Google Calendar, and Google Sheets).\n"
+            "- You CAN check received emails, inspect attached prescriptions/documents, and dispatch email passes. NEVER say 'I cannot access external emails' or 'I don't have access to email'.\n"
             "Spoken Email & Communication Guidelines:\n"
             "- Callers speak over the telephone, so speech-to-text might transcribe email addresses phonetically: words like 'at', 'added', 'at the rate', 'a' instead of '@', and 'dot' or 'point' instead of '.'. They may also spell out letters (e.g. 'n i s h a').\n"
             "- When the caller provides, spells, or updates their email address, acknowledge it immediately and confirm it back clearly (e.g., 'Thank you, I have noted your email as [email]. We will send your appointment confirmation there.').\n"
             "- If the caller asks you to confirm or verify the spelling of their email address, read back their recorded email address clearly.\n"
             "- Respond directly to the user's spoken input with a clear, friendly, and concise solution in 1 to 2 short sentences.\n"
-            "- Do NOT use markdown formatting, bullet points, asterisks, or special characters. Speak directly and naturally to the caller."
+            "- Do NOT use markdown formatting, bullet points, asterisks, or special characters. Speak directly and naturally to the caller.\n"
         )
+        if tool_context:
+            system_content += f"\nLIVE TOOL EXECUTION RESULTS:\n{tool_context}\n"
+            system_content += "- IMPORTANT: Speak directly to the caller confirming the LIVE TOOL EXECUTION RESULTS above in 1 to 2 natural sentences.\n"
         messages = [{"role": "system", "content": system_content}]
         if conversation_history:
             for turn in conversation_history[-8:]:

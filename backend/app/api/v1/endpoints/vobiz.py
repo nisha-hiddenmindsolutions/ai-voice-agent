@@ -601,7 +601,7 @@ async def vobiz_diagnostic(
 
     try:
         # 1. Latest 5 Calls
-        c_res = await db.execute(select(CallORM).order_by(CallORM.created_at.desc()).limit(5))
+        c_res = await db.execute(select(CallORM).order_by(CallORM.started_at.desc()).limit(5))
         calls = c_res.scalars().all()
         calls_data = []
         for c in calls:
@@ -614,7 +614,8 @@ async def vobiz_diagnostic(
                 "direction": direction_str,
                 "duration": c.duration_seconds,
                 "meta": c.call_meta,
-                "created_at": str(c.created_at),
+                "started_at": str(c.started_at),
+                "ended_at": str(c.ended_at),
             })
 
         # 2. Integrations
@@ -665,4 +666,19 @@ async def vobiz_diagnostic(
             "error": str(exc),
             "traceback": traceback.format_exc(),
         }
+
+
+@router.post("/resync/{call_id}")
+async def vobiz_resync_call(
+    call_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger Google Sheets, Calendar, and Gmail sync for a completed call."""
+    import traceback
+    try:
+        await _append_call_summary_to_sheets(call_id, db)
+        return {"status": "ok", "message": f"Sync executed for call {call_id}"}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "traceback": traceback.format_exc()}
+
 

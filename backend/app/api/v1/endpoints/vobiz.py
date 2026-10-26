@@ -614,7 +614,8 @@ async def vobiz_flow_webhook(
         captured_email = call_meta.get("captured_email")
 
         # Extract spoken email
-        extracted_email = await _extract_spoken_email(speech_result)
+        c_name = (returning_profile.get("customer_name") if returning_profile else None) or call_meta.get("customer_name") or ""
+        extracted_email = await _extract_spoken_email(speech_result, caller_name=c_name)
         if extracted_email:
             captured_email = extracted_email
             call_meta["captured_email"] = captured_email

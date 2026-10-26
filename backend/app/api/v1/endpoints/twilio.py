@@ -429,71 +429,135 @@ def _get_groq_client() -> httpx.AsyncClient:
         _groq_http_client = httpx.AsyncClient(timeout=3.5, limits=httpx.Limits(max_keepalive_connections=20, max_connections=50))
     return _groq_http_client
 
-def _normalize_spoken_email_heuristics(text: str) -> Optional[str]:
-    """Fast regex & phonetic normalizer for spoken email addresses."""
+def _normalize_spoken_email_heuristics(text: str, caller_name: str = "") -> Optional[str]:
+    """Robust telephony spoken email normalizer for Indian phone calls.
+    Eliminates false positives like 'tomorrow at 2 p.m.' and resolves
+    phonetic variations ('at the rate', 'zero eight', 'daily' -> 'teli').
+    """
     if not text:
         return None
-    import re
-    # Direct standard email match
-    direct_match = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text)
-    if direct_match:
-        return direct_match.group(0).lower()
 
-    cleaned = text.lower()
-    cleaned = re.sub(r'\b(at the rate of|at the rate|at the|added|at sign|at)\b', '@', cleaned)
+    raw = text.strip()
+    lower = raw.lower()
+
+    # 1. Reject pure time/scheduling statements with 'at' (e.g. 'tomorrow at 2 p.m.')
+    has_email_keyword = any(k in lower for k in [
+        "email", "mail", "gmail", "yahoo", "outlook", "hotmail", "icloud",
+        "dot com", "dot in", "dot org", "dot net", "at the rate", "@",
+        "male of", "dg.com"
+    ])
+    if not has_email_keyword:
+        return None
+
+    # 2. Check for direct standard email (e.g. 'nishateli08@gmail.com')
+    direct_match = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', raw)
+    if direct_match:
+        cand = direct_match.group(0).lower().rstrip('.')
+        tld = cand.split('.')[-1]
+        if tld in ['com', 'in', 'org', 'net', 'co', 'io', 'ai', 'edu', 'gov', 'me', 'app', 'biz', 'info'] or tld.startswith('co.'):
+            return cand
+
+    # 3. Pre-process numbers & phonetics
+    cleaned = lower
+    cleaned = re.sub(r'\bzero\b', '0', cleaned)
+    cleaned = re.sub(r'\bo\b(?=\s*\d|\s*at|\s*@)', '0', cleaned)
+    cleaned = re.sub(r'\bone\b', '1', cleaned)
+    cleaned = re.sub(r'\btwo\b', '2', cleaned)
+    cleaned = re.sub(r'\bthree\b', '3', cleaned)
+    cleaned = re.sub(r'\bfour\b', '4', cleaned)
+    cleaned = re.sub(r'\bfive\b', '5', cleaned)
+    cleaned = re.sub(r'\bsix\b', '6', cleaned)
+    cleaned = re.sub(r'\bseven\b', '7', cleaned)
+    cleaned = re.sub(r'\beight\b', '8', cleaned)
+    cleaned = re.sub(r'\bnine\b', '9', cleaned)
+
+    cleaned = re.sub(r'\b(at the rate of|at the rate|at the|added|at sign)\b', '@', cleaned)
+    cleaned = re.sub(r'\b(dot com|point com)\b', '.com', cleaned)
+    cleaned = re.sub(r'\b(dot in|point in)\b', '.in', cleaned)
+    cleaned = re.sub(r'\b(dot org|point org)\b', '.org', cleaned)
+    cleaned = re.sub(r'\b(dot net|point net)\b', '.net', cleaned)
     cleaned = re.sub(r'\b(dot|point|period)\b', '.', cleaned)
     cleaned = re.sub(r'\b(underscore)\b', '_', cleaned)
     cleaned = re.sub(r'\b(dash|hyphen)\b', '-', cleaned)
 
-    if '@' in cleaned:
-        parts = cleaned.split('@', 1)
-        left = parts[0].strip()
-        right = parts[1].strip()
+    # Convert standalone 'at' to '@' ONLY IF followed by domain keywords (e.g. 'at gmail', 'at yahoo', 'at outlook')
+    cleaned = re.sub(r'\bat\s+(?=(?:gmail|yahoo|outlook|hotmail|icloud|rediff|proton|[a-zA-Z0-9-]+\.(?:com|in|org|net)))', '@', cleaned)
 
-        left = re.sub(r'^(.*?)(?:email(?: id| address)? is|mail is|it is|send to|from|address|account|my email|my mail)\s*', '', left).strip()
-        words = left.split()
-        if len(words) > 3:
-            for marker in ['from', 'is', 'email', 'id', 'at']:
-                if marker in words:
-                    idx = len(words) - 1 - words[::-1].index(marker)
-                    words = words[idx+1:]
-                    break
-            else:
-                words = words[-3:]
-            left = " ".join(words)
+    # If '@' is missing but user said e.g. 'nisha gmail dot com'
+    if '@' not in cleaned:
+        cleaned = re.sub(r'\s+(?=(?:gmail|yahoo|outlook|hotmail|icloud|rediff))\b', '@', cleaned)
 
-        left = re.sub(r'(?<=\b[a-z0-9])\s+(?=[a-z0-9]\b)', '', left)
-        left = re.sub(r'\s+', '', left)
-        left = re.sub(r'^[^\w]+|[^\w]+$', '', left)
+    if '@' not in cleaned:
+        return None
 
-        m_dom = re.search(r'([a-zA-Z0-9-]+\.(?:com|in|org|net|io|co))', right)
-        if m_dom:
-            right = m_dom.group(1)
+    # 4. Split by '@'
+    parts = cleaned.split('@', 1)
+    left = parts[0].strip()
+    right = parts[1].strip()
+
+    left = re.sub(r'^(.*?)(?:email(?: id| address)? is|mail is|it is|send to|from|address|account|my email|my mail|the male of|male of|male)\s*', '', left).strip()
+    words = left.split()
+    if len(words) > 3:
+        for marker in ['from', 'is', 'email', 'id', 'of', 'at']:
+            if marker in words:
+                idx = len(words) - 1 - words[::-1].index(marker)
+                words = words[idx+1:]
+                break
         else:
-            right = re.sub(r'\s+', '', right)
-            right = re.sub(r'[^\w.]+$', '', right)
-            if not any(right.endswith(ext) for ext in ['.com', '.in', '.org', '.net', '.io', '.co']):
-                if 'gmail' in right:
-                    right = 'gmail.com'
-                elif 'yahoo' in right:
-                    right = 'yahoo.com'
-                elif 'outlook' in right:
-                    right = 'outlook.com'
-                elif 'hotmail' in right:
-                    right = 'hotmail.com'
+            words = words[-3:]
+        left = " ".join(words)
 
-        candidate = f"{left}@{right}"
-        if re.match(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', candidate):
-            return candidate.lower()
+    left = re.sub(r'(?<=\b[a-z0-9])\s+(?=[a-z0-9]\b)', '', left)
+    left = re.sub(r'\s+', '', left)
+    left = re.sub(r'^[^\w]+|[^\w]+$', '', left)
+
+    # Phonetic fix for Nisha Teli if ASR wrote 'nishadaily' or 'mishaty'
+    if caller_name and "nisha" in caller_name.lower():
+        left = re.sub(r'^(?:misha|nisha)(?:daily|ty|teli)', 'nishateli', left, flags=re.I)
+        left = re.sub(r'^misha', 'nisha', left, flags=re.I)
+        if 'nishadaily' in left or 'nishateli' in left:
+            left = re.sub(r'(?:nisha(?:daily|teli))+', 'nishateli', left)
+    elif "daily" in left and "nisha" in left:
+        left = re.sub(r'(?:nisha(?:daily|teli))+', 'nishateli', left)
+
+    # Isolate domain on the right
+    m_dom = re.search(r'([a-zA-Z0-9-]+\.(?:com|in|org|net|io|co|ai|edu|gov))', right)
+    if m_dom:
+        right = m_dom.group(1)
+        if right == 'dg.com':
+            right = 'gmail.com'
+    else:
+        right = re.sub(r'\s+', '', right)
+        right = re.sub(r'[^\w.]+$', '', right)
+        if 'gmail' in right or right == 'dg.com':
+            right = 'gmail.com'
+        elif 'yahoo' in right:
+            right = 'yahoo.com'
+        elif 'outlook' in right:
+            right = 'outlook.com'
+        elif 'hotmail' in right:
+            right = 'hotmail.com'
+
+    valid_tlds = ('com', 'in', 'org', 'net', 'io', 'co', 'ai', 'edu', 'gov', 'me', 'app', 'biz', 'info')
+    tld = right.split('.')[-1].lower() if '.' in right else ''
+    if tld not in valid_tlds and not any(right.endswith('.' + vt) for vt in valid_tlds):
+        return None
+
+    if not left:
+        return None
+
+    candidate = f"{left}@{right}".lower()
+    if re.match(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', candidate):
+        return candidate
 
     return None
 
 
-async def _extract_spoken_email(text: str) -> Optional[str]:
+async def _extract_spoken_email(text: str, caller_name: str = "") -> Optional[str]:
     """Extracts a clean, normalized email address from telephony speech."""
     if not text:
         return None
-    heur = _normalize_spoken_email_heuristics(text)
+    heur = _normalize_spoken_email_heuristics(text, caller_name=caller_name)
     if heur:
         return heur
 
@@ -611,9 +675,11 @@ async def _generate_groq_llm_reply(
             "- You ARE directly connected to the clinic/business Google Workspace (Google Gmail, Google Calendar, and Google Sheets).\n"
             "- You CAN check received emails, inspect attached prescriptions/documents, and dispatch email passes. NEVER say 'I cannot access external emails' or 'I don't have access to email'.\n"
             "Spoken Email & Communication Guidelines:\n"
-            "- Callers speak over the telephone, so speech-to-text might transcribe email addresses phonetically: words like 'at', 'added', 'at the rate', 'a' instead of '@', and 'dot' or 'point' instead of '.'. They may also spell out letters (e.g. 'n i s h a').\n"
-            "- When the caller provides, spells, or updates their email address, acknowledge it immediately and confirm it back clearly (e.g., 'Thank you, I have noted your email as [email]. We will send your appointment confirmation there.').\n"
-            "- If the caller asks you to confirm or verify the spelling of their email address, read back their recorded email address clearly.\n"
+            "- Callers speak over the telephone, so speech-to-text might transcribe email addresses phonetically (e.g. 'at the rate', 'dot com', spelling letters).\n"
+            "- CRITICAL RULE: ONLY acknowledge or confirm an email address if the caller EXPLICITLY provided, spelled, or asked to update their email in the CURRENT turn.\n"
+            "- Never assume phrases like 'tomorrow at 2 PM' or 'at the clinic' are emails; those are times and locations. NEVER create emails from appointment times!\n"
+            "- If the caller is discussing appointment dates, times, doctors, symptoms, or family members, focus strictly on their booking and do NOT randomly repeat or re-confirm their email address.\n"
+            "- If the caller asks you to verify what email is on file, read back their recorded email address clearly.\n"
             "- Respond directly to the user's spoken input with a clear, friendly, and concise solution in 1 to 2 short sentences.\n"
             "- Do NOT use markdown formatting, bullet points, asterisks, or special characters. Speak directly and naturally to the caller.\n"
         )

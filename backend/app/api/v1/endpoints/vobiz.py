@@ -199,6 +199,11 @@ async def _lookup_returning_caller_profile(
             last_service = meta.get("specialty") or meta.get("service")
 
     if found_name or found_email:
+        # Phonetic correction for common Indian ASR transcription glitches:
+        # e.g., "Misha" -> "Nisha" when email on file contains "nisha"
+        if found_name and "misha" in found_name.lower() and found_email and "nisha" in found_email.lower():
+            found_name = re.sub(r'\bmisha\b', 'Nisha', found_name, flags=re.I)
+
         first_name = ""
         if found_name:
             parts = found_name.split()

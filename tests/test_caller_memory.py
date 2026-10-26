@@ -96,6 +96,32 @@ class TestCallerMemory(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile["first_name"], "Karan")
         self.assertEqual(profile["customer_email"], "karan.mehta@example.in")
 
+    async def test_phonetic_misha_to_nisha_normalization(self):
+        """If ASR transcribed Misha but email is nishateli08@gmail.com, corrects name to Nisha."""
+        mock_past_call = MagicMock()
+        mock_past_call.id = "call_past_phonetic"
+        mock_past_call.from_number = "+918830631380"
+        mock_past_call.to_number = "+918065354620"
+        mock_past_call.call_meta = {
+            "customer_name": "Misha Teli",
+            "captured_email": "nishateli08@gmail.com",
+        }
+
+        mock_db = AsyncMock()
+        mock_res = MagicMock()
+        mock_res.scalars.return_value.all.return_value = [mock_past_call]
+        mock_db.execute.return_value = mock_res
+
+        profile = await _lookup_returning_caller_profile(
+            db=mock_db,
+            customer_phone="+918830631380",
+            current_call_id="call_new_current"
+        )
+
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["first_name"], "Nisha")
+        self.assertEqual(profile["customer_name"], "Nisha Teli")
+
 
 if __name__ == "__main__":
     unittest.main()

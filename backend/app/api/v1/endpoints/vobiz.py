@@ -573,6 +573,8 @@ async def vobiz_flow_webhook(
         if not speech_result:
             if returning_profile and returning_profile.get("first_name") and returning_profile["first_name"].lower() != "there":
                 fname = returning_profile["first_name"]
+                if fname.lower().startswith("misha"):
+                    fname = "Nisha"
                 if "maya" in agent_name.lower():
                     intro_msg = f"Hello {fname}! Welcome back to City Clinic and Dental Care. How can I assist you today?"
                 elif "aarav" in agent_name.lower() or "real estate" in agent_name.lower():

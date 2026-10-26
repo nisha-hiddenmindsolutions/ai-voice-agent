@@ -565,6 +565,7 @@ async def _generate_groq_llm_reply(
     conversation_history: Optional[List[Dict[str, str]]] = None,
     captured_email: Optional[str] = None,
     tool_context: Optional[str] = None,
+    returning_profile: Optional[Dict[str, Any]] = None,
 ) -> tuple[Optional[str], Optional[int]]:
     """Generates an ultra-fast dynamic real-time AI response using Groq (qwen/qwen3.8-27b) with sub-200ms execution."""
     t0 = time.perf_counter()
@@ -590,9 +591,22 @@ async def _generate_groq_llm_reply(
             return None, None
 
         email_ctx = f"\n- Captured caller email: {captured_email}" if captured_email else "\n- No caller email captured yet."
+        memory_ctx = ""
+        if returning_profile and (returning_profile.get("customer_name") or returning_profile.get("customer_email")):
+            r_name = returning_profile.get("customer_name") or "Valued Client"
+            r_email = returning_profile.get("customer_email") or ""
+            r_service = returning_profile.get("last_service") or ""
+            memory_ctx = (
+                f"\nRETURNING CALLER PROFILE (Memory from previous calls):\n"
+                f"- Customer Name: {r_name}\n"
+                + (f"- Known Email on file: {r_email}\n" if r_email else "")
+                + (f"- Previous Service/Inquiry: {r_service}\n" if r_service else "")
+                + "- Operational Rule: You already recognize this returning customer. If they confirm their details, use them. However, if they are calling for a DIFFERENT doctor, a DIFFERENT service, or a DIFFERENT family member (e.g. child or spouse), immediately accommodate their new request without forcing past bookings!\n"
+            )
+
         system_content = (
             f"You are {agent_name}. {sys_prompt}\n"
-            f"Call context:{email_ctx}\n"
+            f"Call context:{email_ctx}{memory_ctx}\n"
             "Live Tool & Integration Capabilities:\n"
             "- You ARE directly connected to the clinic/business Google Workspace (Google Gmail, Google Calendar, and Google Sheets).\n"
             "- You CAN check received emails, inspect attached prescriptions/documents, and dispatch email passes. NEVER say 'I cannot access external emails' or 'I don't have access to email'.\n"

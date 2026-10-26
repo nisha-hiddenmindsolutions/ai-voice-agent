@@ -118,6 +118,103 @@ def _resolve_customer_phone_and_name(
     return str(customer_phone or "Unknown"), str(customer_name)
 
 
+async def _lookup_returning_caller_profile(
+    db: AsyncSession,
+    customer_phone: str,
+    current_call_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Looks up past completed calls from the same customer phone number.
+    Extracts returning customer profile (name, first_name, email, past_service, past_doctor)
+    to provide personalized memory on incoming and outbound calls.
+    """
+    if not customer_phone or customer_phone in ("Unknown", "", "None") or len(customer_phone) < 7:
+        return None
+
+    # Strip non-digits and isolate the last 10 digits (e.g. 8830631380)
+    digits = re.sub(r'\D', '', customer_phone)
+    phone_suffix = digits[-10:] if len(digits) >= 10 else digits
+
+    vobiz_did_digits = ("8065354620", "918065354620")
+    if phone_suffix in vobiz_did_digits:
+        return None
+
+    try:
+        stmt = (
+            select(CallORM)
+            .where(
+                (CallORM.from_number.like(f"%{phone_suffix}%")) |
+                (CallORM.to_number.like(f"%{phone_suffix}%"))
+            )
+            .order_by(CallORM.started_at.desc())
+            .limit(10)
+        )
+        res = await db.execute(stmt)
+        calls = res.scalars().all()
+    except Exception as exc:
+        logger.warning(f"[Vobiz Memory] Error querying past calls for {phone_suffix}: {exc}")
+        return None
+
+    past_calls = [c for c in calls if (not current_call_id or str(c.id) != str(current_call_id))]
+    if not past_calls:
+        return None
+
+    found_name = None
+    found_email = None
+    last_service = None
+
+    for past_call in past_calls:
+        meta = past_call.call_meta if isinstance(past_call.call_meta, dict) else {}
+
+        # 1. Look for recognized name
+        if not found_name:
+            cand_name = meta.get("customer_name") or meta.get("patient_name")
+            if not cand_name or cand_name == "Caller" or re.search(r'\d{6,}', str(cand_name)):
+                conv = meta.get("conversation_history") or []
+                for turn in reversed(conv):
+                    content = turn.get("content", "")
+                    m = re.search(
+                        r'(?:noted your name as|name is|name will be|call me|email from)\s+([A-Za-z\s]{2,30})',
+                        content,
+                        re.I
+                    )
+                    if m:
+                        c_cand = m.group(1).strip()
+                        c_cand = re.sub(r'\s+(?:please|and|my|what|is|so|for|with|the|to).*$', '', c_cand, flags=re.I).strip()
+                        if len(c_cand) >= 2 and not any(w in c_cand.lower() for w in ["yes", "hello", "doctor", "appointment", "clinic", "today", "tomorrow", "caller"]):
+                            cand_name = c_cand.title()
+                            break
+            if cand_name and cand_name != "Caller" and not re.search(r'\d{6,}', str(cand_name)):
+                found_name = cand_name
+
+        # 2. Look for valid email on file
+        if not found_email:
+            cand_email = meta.get("captured_email") or (meta.get("sync_results") or {}).get("recipient")
+            if cand_email and "@" in str(cand_email) and not str(cand_email).endswith("@example.com"):
+                if not any(bad in str(cand_email).lower() for bad in ["at2p.m", "tomorrow@", "example.com"]):
+                    found_email = str(cand_email).strip().lower()
+
+        # 3. Look for last service / specialty
+        if not last_service:
+            last_service = meta.get("specialty") or meta.get("service")
+
+    if found_name or found_email:
+        first_name = ""
+        if found_name:
+            parts = found_name.split()
+            first_name = parts[0] if parts else ""
+        return {
+            "customer_name": found_name,
+            "first_name": first_name or "there",
+            "customer_email": found_email,
+            "last_service": last_service,
+            "call_count": len(past_calls),
+        }
+
+    return None
+
+
+
 class VobizOutboundRequest(BaseModel):
     to_number: str
     from_number: Optional[str] = None
@@ -453,9 +550,31 @@ async def vobiz_flow_webhook(
                 base_url = "https://" + base_url[7:]
         action_url = f"{base_url}/api/v1/telephony/vobiz/flow?call_id={call_rec.id}"
 
+        # Resolve returning caller profile for personalized memory
+        call_meta = dict(call_rec.call_meta or {})
+        cust_phone, _ = _resolve_customer_phone_and_name(call_rec, call_meta, from_num, to_num)
+        returning_profile = await _lookup_returning_caller_profile(db, cust_phone, current_call_id=call_rec.id)
+        if returning_profile:
+            logger.info(f"[Vobiz Memory] Recognized returning caller on {cust_phone}: {returning_profile}")
+            call_meta["returning_profile"] = returning_profile
+            if returning_profile.get("customer_name") and not call_meta.get("customer_name"):
+                call_meta["customer_name"] = returning_profile["customer_name"]
+            if returning_profile.get("customer_email") and not call_meta.get("captured_email"):
+                call_meta["captured_email"] = returning_profile["customer_email"]
+            call_rec.call_meta = call_meta
+            await db.commit()
+
         # 5. TURN 1: Initial Greeting (No speech yet)
         if not speech_result:
-            if first_msg:
+            if returning_profile and returning_profile.get("first_name") and returning_profile["first_name"].lower() != "there":
+                fname = returning_profile["first_name"]
+                if "maya" in agent_name.lower():
+                    intro_msg = f"Hello {fname}! Welcome back to City Clinic and Dental Care. How can I assist you today?"
+                elif "aarav" in agent_name.lower() or "real estate" in agent_name.lower():
+                    intro_msg = f"Hello {fname}! Welcome back to Prestige Realty. How can I assist you with your property search today?"
+                else:
+                    intro_msg = f"Hello {fname}! Welcome back. How can I assist you today?"
+            elif first_msg:
                 intro_msg = first_msg
             else:
                 intro_msg = f"Hello! This is {agent_name}. How can I assist you today?"
@@ -650,6 +769,7 @@ async def vobiz_flow_webhook(
             conversation_history=conversation_history,
             captured_email=captured_email,
             tool_context=tool_context,
+            returning_profile=returning_profile,
         )
 
         if not reply:
